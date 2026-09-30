@@ -80,28 +80,6 @@ impl Organic {
     }
 }
 
-const EGGPLANT: &[&str] = &[
-    "      ▄█▄",
-    "     ▟███▙",
-    "    ▟█████▙",
-    "   ▟███████▙",
-    "   █████████",
-    "   ▜███████▛",
-    "    ▜█████▛",
-    "     ▜███▛",
-    "      ▜█▛",
-];
-const TOMATO: &[&str] = &[
-    "    ░███░",
-    "   ▄█▀▀▀█▄",
-    " ▟█████████▙",
-    "▟███████████▙",
-    "█████████████",
-    "▜███████████▛",
-    " ▜█████████▛",
-    "  ▜███████▛",
-    "    ▜███▛",
-];
 const CAT: &[&str] = &[
     "  ▄▄     ▄▄",
     " ▟██▙   ▟██▙",
@@ -113,6 +91,79 @@ const CAT: &[&str] = &[
     "  ▜▛     ▜▛    ▜▛",
 ];
 
+/// 对称轮廓形状：rows[i] = 第 i 行的半宽（单位=屏幕格，可为小数）。
+/// 以 (cx, y0) 为首行中心向下逐行填充；边缘用半块字符收齐，左右严格对称。
+fn profile_shape(ctx: &mut Ctx, cx: i32, y0: i32, rows: &[f32], col: crate::buf::Rgb) {
+    let n = rows.len() as f32;
+    for (i, &hw) in rows.iter().enumerate() {
+        let y = y0 + i as i32;
+        if hw <= 0.0 {
+            continue;
+        }
+        // 上亮下暗的轻微立体渐变
+        let shade = col.mul(1.04 - 0.28 * (i as f32 / n));
+        let full = hw.floor() as i32;
+        for x in -full..=full {
+            ctx.put(cx + x, y, '█', shade);
+        }
+        // 边缘半块收边：左侧补右半、右侧补左半（对称）
+        if hw - full as f32 >= 0.3 {
+            let edge = shade.mul(0.72);
+            ctx.put(cx - full - 1, y, '▐', edge);
+            ctx.put(cx + full + 1, y, '▌', edge);
+        }
+    }
+}
+
+/// 茄子：细颈圆腹的水滴形 + 绿色花萼
+fn draw_eggplant(ctx: &mut Ctx, cx: i32, cy: i32) {
+    let rows: &[f32] = &[
+        1.3, 2.6, 3.8, 4.9, 5.9, 6.8, 7.6, 8.2, 8.6, 8.8, 8.9, 8.9, 8.7, 8.4, 8.0, 7.5, 6.9, 6.2,
+        5.4, 4.6, 3.8, 3.0, 2.3, 1.6, 1.0,
+    ];
+    let y0 = cy - (rows.len() as i32 + 3) / 2;
+    // 花萼与梗
+    ctx.put(cx, y0 - 3, '│', theme::GREEN.mul(0.9));
+    profile_shape(ctx, cx, y0 - 2, &[1.6], theme::GREEN);
+    profile_shape(ctx, cx, y0 - 1, &[2.6], theme::GREEN.mul(0.92));
+    // 果身
+    profile_shape(ctx, cx, y0, rows, theme::PURPLE);
+    // 左上高光
+    for (dy, len) in [(5, 3), (6, 4), (7, 4), (8, 3)] {
+        for dx in 0..len {
+            let x = cx - 5 + dx;
+            let y = y0 + dy;
+            let hw = rows[dy as usize];
+            if (cx - x) as f32 <= hw - 1.2 {
+                ctx.put(x, y, '█', theme::PURPLE.mix(theme::WHITE, 0.30));
+            }
+        }
+    }
+}
+
+/// 番茄：扁圆对称 + 绿色蒂叶
+fn draw_tomato(ctx: &mut Ctx, cx: i32, cy: i32) {
+    let (xr, yr) = (15.5, 13.0);
+    let y0 = cy - (yr as i32) / 2;
+    // 蒂叶与梗（先画，被果身顶部压住一点更自然）
+    ctx.put(cx, y0 - 3, '│', theme::GREEN.mul(0.9));
+    profile_shape(ctx, cx, y0 - 2, &[1.4, 2.6], theme::GREEN);
+    profile_shape(ctx, cx, y0 - 1, &[4.2, 3.2], theme::GREEN.mul(0.92));
+    // 果身：双层椭圆做出边缘暗一圈的体积感
+    fill_ellipse(ctx, cx, y0 + yr as i32 / 2, xr, yr, '█', theme::RED.mul(0.78));
+    fill_ellipse(ctx, cx, y0 + yr as i32 / 2, xr - 1.4, yr - 1.1, '█', theme::RED);
+    // 左上高光
+    for dy in -6..-1 {
+        for dx in -7..-2 {
+            let u = (dx + 4) as f32 / (xr - 2.0);
+            let v = dy as f32 / (yr - 2.0);
+            if u * u + v * v <= 1.0 {
+                ctx.put(cx + dx, y0 + yr as i32 / 2 + dy, '█', theme::RED.mix(theme::WHITE, 0.26));
+            }
+        }
+    }
+}
+
 impl Scene for Organic {
     fn name(&self) -> &'static str {
         "NUTRIENTS / ANTIOXIDANTS / PURR"
@@ -122,6 +173,7 @@ impl Scene for Organic {
         let t = ctx.lt;
         let w = ctx.w();
         let h = ctx.h();
+        let cx = w / 2;
         ctx.clear(theme::VOID);
         // 温室的暖调空气：极稀疏的浮尘，而不是满屏纹理
         let warm = match self.stage {
@@ -171,14 +223,12 @@ impl Scene for Organic {
 
         match st {
             0 => {
-                let cols = [theme::PURPLE.mul(0.9); 9];
-                sprite(ctx, EGGPLANT, &cols, theme::PURPLE, a, -3, 3);
+                draw_eggplant(ctx, cx, h / 2 - 2);
                 ctx.textc_glow(2, "If I'm an eggplant", theme::WHITE, theme::PURPLE);
                 bars(ctx, h - 5, "NUTRIENTS", &[0.9, 0.62, 0.34], theme::PURPLE);
             }
             1 => {
-                let cols = [theme::RED.mul(0.95); 9];
-                sprite(ctx, TOMATO, &cols, theme::RED, a, -3, 3);
+                draw_tomato(ctx, cx, h / 2 - 2);
                 ctx.textc_glow(2, "If I'm a tomato", theme::WHITE, theme::RED);
                 bars(ctx, h - 5, "ANTIOXIDANTS", &[0.94, 0.71, 0.52, 0.30], theme::AMBER);
             }
@@ -402,13 +452,15 @@ impl Scene for Morph {
         let h = ctx.h();
         ctx.clear(theme::VOID);
 
-        // 两段：F→M（gender），S→M（role）
-        let (from, to, t0) = if t < 8.3 { ('F', 'M', 3.6) } else { ('S', 'M', 8.9) };
+        // 两段：F→M（gender），S→M（role）——节拍对齐歌词：
+        //   Switch my gender 88.59 │ To F to M 90.20 │ Oh switch my role 95.47 │ To S to M 97.74
+        // 场景起点 89.223 → 局部 0.00 / 0.97 / 6.24 / 8.52
+        let (from, to, t0) = if t < 6.2 { ('F', 'M', 0.95) } else { ('S', 'M', 8.5) };
         if from != self.from {
             self.from = from;
             self.to = to;
         }
-        self.phase = ((t - t0) / 2.4).clamp(0.0, 1.0);
+        self.phase = ((t - t0) / 1.8).clamp(0.0, 1.0);
         let u = fx::smooth(self.phase);
 
         // 扫描线动画
@@ -419,8 +471,10 @@ impl Scene for Morph {
         let y0 = h / 2 - 3;
         let sweep = u * (w as f32 * 1.15) - w as f32 * 0.05;
 
+        // 注意：必须遍历 bw（两字母宽度的较大者）——
+        // F/S 都是 4 列而 M 是 5 列，按 gw 循环会永远画不出 M 的右竖笔
         for yy in 0..gh {
-            for xx in 0..gw {
+            for xx in 0..bw {
                 let f = fg_grid[yy as usize]
                     .get(xx as usize)
                     .copied()
@@ -463,13 +517,13 @@ impl Scene for Morph {
         }
 
         // 两侧标签
-        let lbl_l = if t < 8.3 { "F" } else { "S" };
+        let lbl_l = if t < 6.2 { "F" } else { "S" };
         let lbl_r = "M";
         bigfont::center(ctx.c, ctx.r.x + 12, ctx.r.y + h / 2 - 2, lbl_l, theme::MAGENTA_DIM.mul(0.9), theme::VOID, 1);
         bigfont::center(ctx.c, ctx.r.x + w - 12, ctx.r.y + h / 2 - 2, lbl_r, theme::CYAN_DIM.mul(0.9), theme::VOID, 1);
 
         // 顶部信息
-        let (cap, sub) = if t < 8.3 {
+        let (cap, sub) = if t < 6.2 {
             ("switch my gender", "F → M")
         } else {
             ("switch my role", "S → M")

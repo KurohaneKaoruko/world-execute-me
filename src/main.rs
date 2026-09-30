@@ -262,7 +262,7 @@ fn main() {
     let exe_hint = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "world-execute-me".into());
-    println!("\x1b[36m▌\x1b[0m \x1b[1mworld.execute(me);\x1b[0m  \x1b[2mterminal MV · v1.0.0\x1b[0m");
+    println!("\x1b[36m▌\x1b[0m \x1b[1mworld.execute(me);\x1b[0m  \x1b[2mterminal MV · v1.0.1\x1b[0m");
     println!("\x1b[2m  {exe_hint}\x1b[0m");
 
     // ── 1. 读取音频 ──
