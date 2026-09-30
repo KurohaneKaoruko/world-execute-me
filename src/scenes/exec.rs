@@ -201,16 +201,18 @@ impl Scene for Barrage {
         let ci = count_index(t);
         if ci > 0 {
             let y = h - 5;
-            let total = ci as i32 * 8;
+            let total = ci as i32 * 9;
             let x0 = (w - total) / 2;
             for k in 0..ci {
                 let (num, lang, zh) = COUNTS[k];
                 let appear = 1.0 - ((t - CTIMES[k]) / 0.35).clamp(0.0, 1.0);
                 let col = theme::heat(k as f32 / 6.0).mix(theme::WHITE, appear * 0.5);
-                let s = format!("{num} ");
-                ctx.textb(x0 + k as i32 * 8, y, &s, col, theme::VOID);
-                ctx.textb(x0 + k as i32 * 8 + 6, y, lang, theme::TEXT_FAINT, theme::VOID);
-                ctx.textb(x0 + k as i32 * 8 + 6, y + 1, zh, theme::TEXT_FAINT.mul(0.8), theme::VOID);
+                // 槽宽 9：数字左对齐，语言/中文固定在第 6 列——
+                // 标签纵向成列，且相邻槽位之间至少隔 1 格（TROIS 最长，
+                // 按 sw+1 排会与下一槽的 NE 粘成 "FRNE"）
+                ctx.textb(x0 + k as i32 * 9, y, num, col, theme::VOID);
+                ctx.textb(x0 + k as i32 * 9 + 6, y, lang, theme::TEXT_FAINT, theme::VOID);
+                ctx.textb(x0 + k as i32 * 9 + 6, y + 1, zh, theme::TEXT_FAINT.mul(0.8), theme::VOID);
             }
             let since6 = t - CTIMES[5];
             if (0.0..0.7).contains(&since6) {
