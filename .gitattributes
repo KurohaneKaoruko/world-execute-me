@@ -1,0 +1,13 @@
+# 换行规范：文本按需规范化，脚本强制 LF，媒体/帧数据为二进制
+* text=auto
+*.sh  text eol=lf
+*.py  text
+*.rs  text
+*.toml text
+*.md  text
+*.lrc text
+*.txt text
+
+*.png binary
+*.bin binary
+*.mp3 binary

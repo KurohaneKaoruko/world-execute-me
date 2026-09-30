@@ -1,0 +1,9 @@
+# 构建产物
+/target
+
+# 开发期临时输出（离屏预览、截图）
+/_dev
+
+# 系统杂项
+Thumbs.db
+.DS_Store
