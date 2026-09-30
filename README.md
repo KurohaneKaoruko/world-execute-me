@@ -34,6 +34,10 @@ cargo run --release
 音频文件默认从 `assets/audio/world.execute(me); - Mili.mp3` 读取，找不到时以静音模式运行
 （时间轴走墙钟，画面完全一致）。
 
+> **版权说明**：仓库内的音频、歌词等素材版权归 **Mili** 及其 respective rights holders
+> 所有，仅为个人非商业学习用途随仓库分发；详见 [LICENSE](LICENSE)。
+> 如版权方提出要求，将立即移除。
+
 ### 选项
 
 ```
@@ -141,3 +145,19 @@ cargo run --release -- --no-audio --shots "31,85,150" --out _dev/preview/all.htm
 python tools/render_frames.py out.png _dev/preview/all_00.bin _dev/preview/all_01.bin   # 二进制帧 → PNG
 ./tools/shoot.sh 04 17 33                                            # 打开 HTML 截图（→ _dev/shots）
 ```
+
+## 渲染成视频
+
+把整首歌逐帧离屏渲染（严格 60fps、零丢帧，与实时播放共用同一渲染管线），
+再用 ffmpeg 与歌曲音频合成 1080p MP4：
+
+```
+# 1) 逐帧导出（≈12,800 帧 .bin，几十秒完成）
+cargo run --release -- --render-video _video/frames
+
+# 2) 合成 MP4（需要 Pillow；ffmpeg 放到 tools/ffmpeg/ffmpeg.exe 或加入 PATH）
+pip install pillow
+python tools/render_video.py _video/frames "assets/audio/world.execute(me); - Mili.mp3" _video/world-execute-me.mp4
+```
+
+便携版 ffmpeg 下载解压后把 `bin/ffmpeg.exe` 放进 `tools/ffmpeg/` 即可（已 gitignore）。

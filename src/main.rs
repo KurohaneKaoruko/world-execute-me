@@ -33,6 +33,7 @@ struct Args {
     file: PathBuf,
     no_audio: bool,
     shots: Option<Vec<f32>>,
+    render_video: Option<PathBuf>,
     size: (i32, i32),
     out: PathBuf,
     start: f32,
@@ -45,6 +46,7 @@ fn parse_args() -> Args {
         file: PathBuf::from(DEFAULT_TRACK),
         no_audio: false,
         shots: None,
+        render_video: None,
         size: (0, 0),
         out: PathBuf::from("preview.html"),
         start: 0.0,
@@ -61,6 +63,10 @@ fn parse_args() -> Args {
             }
             "--no-audio" => a.no_audio = true,
             "--no-splash" => a.splash = false,
+            "--render-video" => {
+                let v = it.next().unwrap_or_default();
+                a.render_video = Some(PathBuf::from(v));
+            }
             "--shots" => {
                 let v = it.next().unwrap_or_default();
                 let times: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
@@ -103,6 +109,9 @@ fn parse_args() -> Args {
       --no-splash      跳过开始前的标题闪屏
       --start <秒>     从指定位置开始播放
       --shots t1,t2,…  离屏渲染若干时间点的画面到 HTML（开发校验用）
+      --render-video <目录>
+                       把整首歌逐帧离屏渲染成 .bin 帧序列
+                       （配合 tools/render_video.py 合成 MP4）
       --size WxH       离屏渲染尺寸（默认 160x48）
       --out <路径>     离屏渲染输出文件（默认 preview.html）
       --fps <数字>     渲染帧率上限（默认 60）
@@ -262,7 +271,7 @@ fn main() {
     let exe_hint = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "world-execute-me".into());
-    println!("\x1b[36m▌\x1b[0m \x1b[1mworld.execute(me);\x1b[0m  \x1b[2mterminal MV · v1.0.1\x1b[0m");
+    println!("\x1b[36m▌\x1b[0m \x1b[1mworld.execute(me);\x1b[0m  \x1b[2mterminal MV · v1.0.3\x1b[0m");
     println!("\x1b[2m  {exe_hint}\x1b[0m");
 
     // ── 1. 读取音频 ──
@@ -329,6 +338,12 @@ fn main() {
         tl.segs.len(),
         reading.as_secs_f32()
     );
+
+    // ── 视频渲染模式：逐帧导出 .bin 帧序列 ──
+    if let Some(dir) = args.render_video.clone() {
+        render_video(&dir, &mut tl, &ly, &info, spec);
+        return;
+    }
 
     // ── 离屏模式 ──
     if let Some(times) = args.shots.clone() {
@@ -528,6 +543,58 @@ fn resolve_track(p: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// 视频渲染模式：从 0 顺序步进到曲终，把每一帧写成 .bin（WEMV 格式）。
+/// 与实时播放共用 render_frame，从 t=0 顺序推进本身就是"预热"，
+/// 因此逐帧确定、可复现，合成出的视频绝对流畅（严格 60fps、零丢帧）。
+fn render_video(
+    dir: &Path,
+    tl: &mut Timeline,
+    ly: &lyrics::Lyrics,
+    info: &audio::TrackInfo,
+    spec: audio::Spectrum,
+) {
+    let _ = std::fs::create_dir_all(dir);
+    let (w, h) = (160, 48);
+    let mut canvas = Canvas::new(w, h);
+    let lay = Layout::compute(w, h);
+    let mut v = view::View::new();
+    let mut aud = audio::Audio::silent(info.clone(), spec);
+    // 与交互模式同一套终局判定：最后一句歌词 + 6.2s 余韵 + 0.8s 黑场
+    let dur = ly.lines.last().map(|l| l.t + 6.2).unwrap_or(212.0) + 0.8;
+    let frames = (dur * 60.0).ceil() as i32;
+    const DT: f32 = 1.0 / 60.0;
+    let t0 = Instant::now();
+    for k in 0..frames {
+        let t = k as f32 * DT;
+        v.update(&mut aud, ly, t, DT);
+        render_frame(&mut canvas, tl, &mut v, ly, &lay, DT);
+        let p = dir.join(format!("f_{:05}.bin", k));
+        if std::fs::write(&p, term::frame_to_bin(&canvas)).is_err() {
+            eprintln!("写出 {p:?} 失败");
+            return;
+        }
+        if k % 600 == 0 {
+            let el = t0.elapsed().as_secs_f32();
+            println!(
+                "  {:>5.1}%  帧 {}/{}  t={:.1}s  ({:.0} 帧/s)",
+                k as f32 / frames as f32 * 100.0,
+                k + 1,
+                frames,
+                t,
+                if el > 0.0 { k as f32 / el } else { 0.0 }
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+    }
+    println!(
+        "已导出 {} 帧到 {}（曲长 {:.1}s · 耗时 {:.1}s）",
+        frames,
+        dir.display(),
+        frames as f32 * DT,
+        t0.elapsed().as_secs_f32()
+    );
 }
 
 /// 离屏渲染若干时间点到 HTML，用于开发期视觉校验

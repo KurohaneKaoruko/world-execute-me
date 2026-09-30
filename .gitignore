@@ -4,6 +4,15 @@
 # 开发期临时输出（离屏预览、截图）
 /_dev
 
+# 视频渲染输出
+/_video
+
+# 便携 ffmpeg（tools/ffmpeg/，见 README「渲染成视频」）
+tools/ffmpeg/
+
+# Python 缓存
+__pycache__/
+
 # 系统杂项
 Thumbs.db
 .DS_Store
