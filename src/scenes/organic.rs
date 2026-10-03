@@ -3,6 +3,7 @@
 use crate::bigfont;
 use crate::buf::{Frame, Rect};
 use crate::fx::{self, Particles};
+use crate::fx3d;
 use crate::scenes::{Ctx, Scene};
 use crate::theme;
 
@@ -64,10 +65,37 @@ fn sprite(
 // ════════════════════════════════════════════════════════════
 // 7. Organic —— 74.045 → 82.589
 // ════════════════════════════════════════════════════════════
+/// 茄子轮廓（半宽 → 世界半径），细颈圆腹
+fn eggplant_profile() -> Vec<(f32, f32)> {
+    let rows: &[f32] = &[
+        1.3, 2.6, 3.8, 4.9, 5.9, 6.8, 7.6, 8.2, 8.6, 8.8, 8.9, 8.9, 8.7, 8.4, 8.0, 7.5, 6.9, 6.2,
+        5.4, 4.6, 3.8, 3.0, 2.3, 1.6, 1.0,
+    ];
+    let n = rows.len();
+    (0..n)
+        .map(|i| {
+            let y = 1.25 - 2.5 * i as f32 / (n - 1) as f32;
+            (rows[i] / 9.0, y)
+        })
+        .collect()
+}
+
+/// 番茄轮廓：扁圆
+fn tomato_profile() -> Vec<(f32, f32)> {
+    (0..22)
+        .map(|i| {
+            let y = 0.86 - 1.72 * i as f32 / 21.0;
+            ((1.0 - (y / 0.95).powi(2)).max(0.0).sqrt(), y)
+        })
+        .collect()
+}
+
 pub struct Organic {
     parts: Particles,
     stage: i32,
     parts_t: f32,
+    /// 3D 蔬菜：旋转体茄子 / 番茄
+    veg: [fx3d::Cloud; 2],
 }
 
 impl Organic {
@@ -76,6 +104,10 @@ impl Organic {
             parts: Particles::new(),
             stage: -1,
             parts_t: 0.0,
+            veg: [
+                fx3d::revolve_cloud(&eggplant_profile(), 0.86, 24),
+                fx3d::revolve_cloud(&tomato_profile(), 0.9, 24),
+            ],
         }
     }
 }
@@ -111,55 +143,6 @@ fn profile_shape(ctx: &mut Ctx, cx: i32, y0: i32, rows: &[f32], col: crate::buf:
             let edge = shade.mul(0.72);
             ctx.put(cx - full - 1, y, '▐', edge);
             ctx.put(cx + full + 1, y, '▌', edge);
-        }
-    }
-}
-
-/// 茄子：细颈圆腹的水滴形 + 绿色花萼
-fn draw_eggplant(ctx: &mut Ctx, cx: i32, cy: i32) {
-    let rows: &[f32] = &[
-        1.3, 2.6, 3.8, 4.9, 5.9, 6.8, 7.6, 8.2, 8.6, 8.8, 8.9, 8.9, 8.7, 8.4, 8.0, 7.5, 6.9, 6.2,
-        5.4, 4.6, 3.8, 3.0, 2.3, 1.6, 1.0,
-    ];
-    let y0 = cy - (rows.len() as i32 + 3) / 2;
-    // 花萼与梗
-    ctx.put(cx, y0 - 3, '│', theme::GREEN.mul(0.9));
-    profile_shape(ctx, cx, y0 - 2, &[1.6], theme::GREEN);
-    profile_shape(ctx, cx, y0 - 1, &[2.6], theme::GREEN.mul(0.92));
-    // 果身
-    profile_shape(ctx, cx, y0, rows, theme::PURPLE);
-    // 左上高光
-    for (dy, len) in [(5, 3), (6, 4), (7, 4), (8, 3)] {
-        for dx in 0..len {
-            let x = cx - 5 + dx;
-            let y = y0 + dy;
-            let hw = rows[dy as usize];
-            if (cx - x) as f32 <= hw - 1.2 {
-                ctx.put(x, y, '█', theme::PURPLE.mix(theme::WHITE, 0.30));
-            }
-        }
-    }
-}
-
-/// 番茄：扁圆对称 + 绿色蒂叶
-fn draw_tomato(ctx: &mut Ctx, cx: i32, cy: i32) {
-    let (xr, yr) = (15.5, 13.0);
-    let y0 = cy - (yr as i32) / 2;
-    // 蒂叶与梗（先画，被果身顶部压住一点更自然）
-    ctx.put(cx, y0 - 3, '│', theme::GREEN.mul(0.9));
-    profile_shape(ctx, cx, y0 - 2, &[1.4, 2.6], theme::GREEN);
-    profile_shape(ctx, cx, y0 - 1, &[4.2, 3.2], theme::GREEN.mul(0.92));
-    // 果身：双层椭圆做出边缘暗一圈的体积感
-    fill_ellipse(ctx, cx, y0 + yr as i32 / 2, xr, yr, '█', theme::RED.mul(0.78));
-    fill_ellipse(ctx, cx, y0 + yr as i32 / 2, xr - 1.4, yr - 1.1, '█', theme::RED);
-    // 左上高光
-    for dy in -6..-1 {
-        for dx in -7..-2 {
-            let u = (dx + 4) as f32 / (xr - 2.0);
-            let v = dy as f32 / (yr - 2.0);
-            if u * u + v * v <= 1.0 {
-                ctx.put(cx + dx, y0 + yr as i32 / 2 + dy, '█', theme::RED.mix(theme::WHITE, 0.26));
-            }
         }
     }
 }
@@ -218,21 +201,59 @@ impl Scene for Organic {
             self.parts.burst(x, y, 60, 30.0, 1.4, fx::BLOCK_HEAVY, col, &mut ctx.rng);
         }
         let a = fx::smooth((self.parts_t / 0.6).clamp(0.0, 1.0)) * (0.7 + ctx.bass() * 0.5);
+        let bass = ctx.bass();
         self.parts.update(ctx.dt, 6.0, 0.7);
         self.parts.draw(ctx.c);
 
         match st {
             0 => {
-                draw_eggplant(ctx, cx, h / 2 - 2);
+                // 3D 茄子：旋转体曲面缓缓自转，绿蒂压在顶端
+                let mut r3 = fx3d::R3::new(w, h);
+                r3.cam_z = 3.2;
+                r3.focal = h as f32 * 2.0;
+                r3.begin();
+                let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+                let xf = fx3d::Xform::scaled(t * 0.7, 0.10 * (t * 0.4).sin(), 0.0, 1.02);
+                r3.surface(&mut tg, &self.veg[0].pts, &self.veg[0].nrm, &xf, theme::PURPLE, theme::WHITE, 5.2, 0.95 + bass, 0.95);
+                // 投在地面的影子
+                ctx.c.ellipse(w / 2, h / 2 + 15, 13.0, 2.0, '░', theme::GREEN_DIM.mul(0.5), theme::VOID);
+                // 蒂叶与梗（画在曲面之上）
+                let top = h as f32 / 2.0 - 15.0;
+                ctx.put(cx, top as i32 - 2, '│', theme::GREEN.mul(0.9));
+                profile_shape(ctx, cx, top as i32 - 1, &[1.6], theme::GREEN);
+                profile_shape(ctx, cx, top as i32, &[2.6], theme::GREEN.mul(0.92));
                 ctx.textc_glow(2, "If I'm an eggplant", theme::WHITE, theme::PURPLE);
                 bars(ctx, h - 5, "NUTRIENTS", &[0.9, 0.62, 0.34], theme::PURPLE);
             }
             1 => {
-                draw_tomato(ctx, cx, h / 2 - 2);
+                // 3D 番茄：扁圆旋转体
+                let mut r3 = fx3d::R3::new(w, h);
+                r3.cam_z = 3.2;
+                r3.focal = h as f32 * 2.0;
+                r3.begin();
+                let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+                let xf = fx3d::Xform::scaled(-t * 0.8, 0.10 * (t * 0.4).sin(), 0.0, 1.05);
+                r3.surface(&mut tg, &self.veg[1].pts, &self.veg[1].nrm, &xf, theme::RED, theme::WHITE, 5.2, 0.95 + bass, 0.95);
+                ctx.c.ellipse(w / 2, h / 2 + 12, 14.0, 2.0, '░', theme::GREEN_DIM.mul(0.5), theme::VOID);
+                let top = h as f32 / 2.0 - 11.0;
+                ctx.put(cx, top as i32 - 2, '│', theme::GREEN.mul(0.9));
+                profile_shape(ctx, cx, top as i32 - 1, &[1.4, 2.6], theme::GREEN);
+                profile_shape(ctx, cx, top as i32, &[4.2, 3.2], theme::GREEN.mul(0.92));
                 ctx.textc_glow(2, "If I'm a tomato", theme::WHITE, theme::RED);
                 bars(ctx, h - 5, "ANTIOXIDANTS", &[0.94, 0.71, 0.52, 0.30], theme::AMBER);
             }
             _ => {
+                // 猫咪舞台：脚下的透视地板 + 呼噜波纹
+                {
+                    let mut r3 = fx3d::R3::new(w, h);
+                    r3.cam_z = 3.0;
+                    r3.focal = h as f32 * 2.0;
+                    r3.begin();
+                    let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+                    let fl = fx3d::floor_mesh(9, 0.0);
+                    let fxf = fx3d::Xform::scaled(0.0, 1.25, 0.0, 1.4);
+                    r3.wire(&mut tg, &fl, &fxf, theme::GREEN_DIM, theme::AMBER_DIM, 6.0, 0.55, 0.75);
+                }
                 let cols = [theme::AMBER.mul(0.95); 8];
                 sprite(ctx, CAT, &cols, theme::AMBER, a, -3, 3);
                 // 呼噜声：从猫身上扩散的波纹
@@ -283,11 +304,21 @@ fn bars(ctx: &mut Ctx, y: i32, label: &str, vals: &[f32], col: crate::buf::Rgb) 
 // ════════════════════════════════════════════════════════════
 // 8. Deity —— 82.589 → 89.223
 // ════════════════════════════════════════════════════════════
-pub struct Deity;
+/// 神迹的证据：三层不同轴倾角的 3D 陀螺环围绕全视之眼反向旋转——
+/// 平面曼陀罗退为衬底，"神"第一次有了体积。
+pub struct Deity {
+    rings: [fx3d::Cloud; 3],
+}
 
 impl Deity {
     pub fn new() -> Self {
-        Deity
+        Deity {
+            rings: [
+                fx3d::torus_cloud(0.92, 0.030, 72, 8),
+                fx3d::torus_cloud(0.66, 0.026, 60, 8),
+                fx3d::torus_cloud(0.44, 0.022, 48, 6),
+            ],
+        }
     }
 }
 
@@ -318,35 +349,69 @@ impl Scene for Deity {
                 theme::VOID,
             );
         }
+        // ② 放射神光：从中心向外的细光线，随低频抽搐
+        let ray_n = 18;
+        for k in 0..ray_n {
+            let a = k as f32 / ray_n as f32 * std::f32::consts::TAU + t * 0.08;
+            let len = h as f32 * (0.16 + 0.10 * ((t * 2.3 + k as f32 * 1.7).sin() * 0.5 + 0.5)) * (0.7 + ctx.bass() * 0.6);
+            for step in 0..((len / 1.4) as i32) {
+                let rr = step as f32 * 1.4 + 3.0;
+                let x = cx as f32 + a.cos() * rr * 2.1;
+                let y = cy as f32 + a.sin() * rr;
+                let fade = 1.0 - step as f32 / ((len / 1.4).max(1.0));
+                ctx.put(x as i32, y as i32, '·', theme::AMBER.mul(0.30 * fade * (0.5 + ctx.bass() * 0.8)));
+            }
+        }
 
-        // ② 曼陀罗：由外向内的同心环，奇偶反向旋转
-        let rings = 9;
+        // ③ 平面曼陀罗衬底（由外向内 5 环，奇偶反向）
+        let rings = 5;
         for k in 0..rings {
-            let u = k as f32 / rings as f32; // 0=外 → 1=内
+            let u = k as f32 / rings as f32;
             let rr = (1.0 - u) * (h as f32 * 0.44) + 3.0;
             let n = ((rr * 2.4) as i32).max(10);
             let rot = t * (0.15 + (1.0 - u) * 0.7) * if k % 2 == 0 { 1.0 } else { -1.0 };
-            let (ch, gain) = match k % 3 {
-                0 => ('·', 0.55),
-                1 => ('○', 0.9),
-                _ => ('◇', 0.72),
-            };
-            let col = theme::AMBER.mul((0.10 + 0.62 * u) * (0.45 + ctx.bass() * 0.8) * gain);
+            let col = theme::AMBER.mul((0.10 + 0.5 * u) * (0.40 + ctx.bass() * 0.7) * 0.55);
             for i in 0..n {
                 let a = i as f32 / n as f32 * std::f32::consts::TAU + rot;
                 ctx.put(
                     cx + (a.cos() * rr * 2.1) as i32,
                     cy + (a.sin() * rr) as i32,
-                    ch,
+                    '·',
                     col,
                 );
             }
         }
 
-        // ③ 中央之眼
+        // ④ 3D 陀螺环：三层，各自绕不同轴倾角自转 + 整体缓慢进动
+        {
+            let gain = 0.55 + ctx.bass() * 0.55;
+            let mut r3 = fx3d::R3::new(w, h);
+            r3.cam_z = 3.2;
+            r3.focal = h as f32 * 2.4;
+            r3.begin();
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            let span = 5.6;
+            for (k, cloud) in self.rings.iter().enumerate() {
+                let dir = if k % 2 == 0 { 1.0 } else { -1.0 };
+                // 先绕 z 自转（环面在 xy 平面），再倾斜，最后整体进动
+                let xf = fx3d::Xform::new(
+                    t * 0.13 + k as f32 * 0.8,
+                    (0.85 + k as f32 * 0.55) * if k == 1 { -1.0 } else { 1.0 } + 0.10 * (t * 0.4 + k as f32).sin(),
+                    t * (0.55 + k as f32 * 0.22) * dir,
+                );
+                let hot = match k {
+                    0 => theme::AMBER,
+                    1 => theme::WHITE,
+                    _ => theme::MAGENTA,
+                };
+                r3.surface(&mut tg, &cloud.pts, &cloud.nrm, &xf, theme::AMBER.mul(0.9), hot, span, gain, 0.9);
+            }
+        }
+
+        // ⑤ 中央之眼
         draw_eye(ctx, cx, cy, h, ctx.bass());
 
-        // ④ 存在（大字）
+        // ⑥ 存在（大字）
         if t > 3.0 {
             let rev = fx::reveal_count(t - 3.0, 9.0, 9) as f32;
             bigfont::draw_reveal(
@@ -361,7 +426,7 @@ impl Scene for Deity {
                 1,
             );
         }
-        // ⑤ 标题（最后画，保证不被任何东西压住）
+        // ⑦ 标题（最后画，保证不被任何东西压住）
         ctx.textc_glow(2, "you're the proof of my existence", theme::WHITE, theme::AMBER);
     }
 }
@@ -463,46 +528,52 @@ impl Scene for Morph {
         self.phase = ((t - t0) / 1.8).clamp(0.0, 1.0);
         let u = fx::smooth(self.phase);
 
-        // 扫描线动画
+        // 3D 立体字：有厚度的字块轻轻摇曳，扫描线扫过的部分变成目标字母
         let (fg_grid, gw, gh) = bigfont::bitmap(&self.from.to_string(), 1);
         let (tg_grid, _, _) = bigfont::bitmap(&self.to.to_string(), 1);
         let bw = gw.max(bigfont::width(&self.to.to_string(), 1));
-        let x0 = (w - bw) / 2;
-        let y0 = h / 2 - 3;
         let sweep = u * (w as f32 * 1.15) - w as f32 * 0.05;
 
-        // 注意：必须遍历 bw（两字母宽度的较大者）——
-        // F/S 都是 4 列而 M 是 5 列，按 gw 循环会永远画不出 M 的右竖笔
-        for yy in 0..gh {
-            for xx in 0..bw {
-                let f = fg_grid[yy as usize]
-                    .get(xx as usize)
-                    .copied()
-                    .unwrap_or(false);
-                let s = tg_grid[yy as usize]
-                    .get(xx as usize)
-                    .copied()
-                    .unwrap_or(false);
-                let px = x0 + xx;
-                let py = y0 + yy;
-                let in_sweep = (px as f32) < sweep;
-                let ink = if in_sweep { s } else { f };
-                if ink {
+        let mut r3 = fx3d::R3::new(w, h);
+        r3.cam_z = 3.2;
+        r3.focal = h as f32 * 2.0;
+        r3.begin();
+        {
+            let mut tg3 = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            // 世界单位：屏幕上字宽约 4.6×bw 列
+            let su = 4.6 * 3.2 / (h as f32 * 2.0);
+            let world_sweep = (sweep - w as f32 / 2.0) * 3.2 / (h as f32 * 2.0);
+            let xf = fx3d::Xform::new(0.32 * (t * 0.8).sin(), 0.15 * (t * 0.53).sin(), 0.0);
+            let layers = 6;
+            for yy in 0..gh {
+                for xx in 0..bw {
+                    let wx = (xx as f32 - bw as f32 / 2.0) * su;
+                    let in_sweep = wx < world_sweep;
+                    let ink = if in_sweep {
+                        tg_grid[yy as usize].get(xx as usize).copied().unwrap_or(false)
+                    } else {
+                        fg_grid[yy as usize].get(xx as usize).copied().unwrap_or(false)
+                    };
+                    if !ink {
+                        continue;
+                    }
                     let col = if in_sweep { theme::CYAN } else { theme::MAGENTA };
-                    let wob = 0.75 + 0.25 * ((px as f32 * 0.3 - t * 4.0).sin() * 0.5 + 0.5);
-                    ctx.put(px, py, '█', col.mul(wob));
-                    ctx.glow(px - 1, py, col, 0.25);
-                    ctx.glow(px + 1, py, col, 0.25);
-                } else if !in_sweep && s && f {
-                    ctx.put(px, py, '▒', theme::TEXT_FAINT.mul(0.4));
-                } else if (px as f32 - sweep).abs() < 1.2 && (f || s) {
-                    ctx.put(px, py, '▓', theme::WHITE);
+                    for layer in 0..layers {
+                        let z = (layer as f32 / (layers - 1) as f32 - 0.5) * 0.55;
+                        let p = fx3d::Vec3::new(wx, (gh as f32 / 2.0 - yy as f32) * su, z);
+                        let rp = xf.apply(p);
+                        let Some((sx, sy, d)) = r3.project(rp) else { continue };
+                        let zshade = 0.45 + 0.55 * ((z + 0.275) / 0.55);
+                        let wob = 0.75 + 0.25 * ((sx * 0.3 - t * 4.0).sin() * 0.5 + 0.5);
+                        r3.plot(&mut tg3, sx, sy, d, '█', col.mul(zshade * wob), 0.95);
+                    }
                 }
             }
         }
         // 扫描线本体
         if u < 1.0 {
-            for yy in (y0 - 2)..(y0 + gh + 2) {
+            let cy0 = h / 2;
+            for yy in (cy0 - 8)..=(cy0 + 8) {
                 ctx.put(sweep as i32, yy, '▌', theme::WHITE);
             }
         }
@@ -510,7 +581,7 @@ impl Scene for Morph {
         if u > 0.02 && u < 0.99 {
             for _ in 0..6 {
                 let x = sweep as i32 + ctx.rng.irange(-6, 6);
-                let y = y0 + ctx.rng.irange(0, gh);
+                let y = h / 2 + ctx.rng.irange(-6, 6);
                 let ch = *ctx.rng.pick(fx::SPARK);
                 ctx.put(x, y, ch, theme::CYAN.mul(0.8));
             }
@@ -563,12 +634,22 @@ impl Scene for Morph {
 // ════════════════════════════════════════════════════════════
 pub struct Trance {
     parts: Particles,
+    /// 超时空星流：恍惚 = 世界在耳边飞速后退
+    warp: fx3d::Warp,
+    /// 3D 悬浮转环
+    rings: [fx3d::Cloud; 3],
 }
 
 impl Trance {
     pub fn new() -> Self {
         Trance {
             parts: Particles::new(),
+            warp: fx3d::Warp::new(240, 0x7ECE),
+            rings: [
+                fx3d::torus_cloud(0.92, 0.020, 70, 6),
+                fx3d::torus_cloud(0.64, 0.018, 56, 6),
+                fx3d::torus_cloud(0.40, 0.016, 44, 6),
+            ],
         }
     }
 }
@@ -586,15 +667,55 @@ impl Scene for Trance {
         let cy = h / 2;
         ctx.clear(theme::VOID);
 
-        // 催眠同心环
-        for k in 0..16 {
+        // COMPLETION 进度决定星流的"减速入站"
+        let comp = ((t - 6.6) / 2.6).clamp(0.0, 1.0);
+        let speed = (0.085 + ctx.bass() * 0.13) * (1.0 - comp * 0.75);
+        let near = theme::CYAN.mix(theme::GREEN, comp * 0.8).mix(theme::WHITE, ctx.bass() * 0.3);
+        let warp_bright = 0.75 + ctx.bass() * 0.55;
+        {
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            self.warp.draw(
+                &mut tg,
+                cx as f32,
+                cy as f32,
+                h as f32 * 2.0,
+                t,
+                speed,
+                near,
+                theme::PURPLE_DIM,
+                warp_bright,
+            );
+        }
+
+        // 3D 悬浮转环（恍惚中围绕镜头的三只陀螺环）
+        {
+            let ring_bright = (0.95 + ctx.bass() * 0.7) * (1.0 - comp * 0.35);
+            let mut r3 = fx3d::R3::new(w, h);
+            r3.cam_z = 3.2;
+            r3.focal = h as f32 * 2.4;
+            r3.begin();
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            for (k, cloud) in self.rings.iter().enumerate() {
+                let dir = if k % 2 == 0 { 1.0 } else { -1.0 };
+                let xf = fx3d::Xform::new(
+                    t * 0.15 + k as f32 * 0.8,
+                    (0.85 + k as f32 * 0.5) * if k == 1 { -1.0 } else { 1.0 } + 0.12 * (t * 0.4 + k as f32).sin(),
+                    t * (0.5 + k as f32 * 0.25) * dir,
+                );
+                let base = if k == 1 { theme::CYAN } else { theme::PURPLE };
+                r3.surface(&mut tg, &cloud.pts, &cloud.nrm, &xf, base, theme::WHITE, 5.6, ring_bright, 0.9);
+            }
+        }
+
+        // 催眠同心环（2D 衬底）
+        for k in 0..10 {
             let ph = ((t * 0.5 + k as f32 / 16.0) % 1.0).max(0.001);
             let rr = ph * (h as f32 * 0.55);
             let a = (1.0 - ph).powf(1.6);
             let col = theme::PURPLE.mix(theme::CYAN, ph);
             let ch = if k % 3 == 0 { '○' } else { '·' };
             ctx.c
-                .ellipse(cx, cy, rr * 2.2, rr, ch, col.mul(a * (0.35 + ctx.bass() * 0.8)), theme::VOID);
+                .ellipse(cx, cy, rr * 2.2, rr, ch, col.mul(a * (0.45 + ctx.bass() * 0.8)), theme::VOID);
         }
 
         // 振动波形（VIBRATIONS）
@@ -617,7 +738,6 @@ impl Scene for Trance {
         }
 
         // COMPLETION：闭环进度
-        let comp = ((t - 6.6) / 2.6).clamp(0.0, 1.0);
         if comp > 0.0 {
             let rr = (h as f32 * 0.30).min(14.0);
             let n = (comp * 160.0) as i32;
@@ -641,20 +761,17 @@ impl Scene for Trance {
             }
             if comp >= 1.0 {
                 let pulse = 0.6 + 0.4 * ctx.bass();
-                for k in 0..3 {
-                    if ctx.rng.chance(0.3) {
-                        self.parts.burst(
-                            cx as f32,
-                            cy as f32,
-                            4,
-                            12.0,
-                            0.6,
-                            fx::SPARK,
-                            theme::GREEN,
-                            &mut ctx.rng,
-                        );
-                    }
-                    let _ = k;
+                if ctx.rng.chance(0.3) {
+                    self.parts.burst(
+                        cx as f32,
+                        cy as f32,
+                        4,
+                        12.0,
+                        0.6,
+                        fx::SPARK,
+                        theme::GREEN,
+                        &mut ctx.rng,
+                    );
                 }
                 ctx.textc_glow(cy + 4, "COMPLETION", theme::WHITE.mul(pulse), theme::GREEN);
             }

@@ -3,6 +3,7 @@
 use crate::bigfont;
 use crate::buf::{Frame, Rect, Rgb};
 use crate::fx::{self, Particles};
+use crate::fx3d;
 use crate::scenes::{Ctx, Scene};
 use crate::theme;
 
@@ -174,6 +175,31 @@ impl Scene for Abandon {
             }
         }
 
+        // 每次删除：文件碎片被吸向"用户离开"的消失点
+        let vp = (w as f32 * 0.82, h as f32 * 0.38);
+        for (i, dt) in Self::DEL.iter().enumerate() {
+            let age = t - dt;
+            if age < 0.0 || age > 1.3 {
+                continue;
+            }
+            let y0 = (r.y + 3 + i as i32) as f32;
+            let x0 = (r.x + 8) as f32;
+            for k in 0..26 {
+                let hj = fx::hash2(k, i as i32 + 40, 61);
+                let h2 = fx::hash2(k, i as i32 + 41, 61);
+                let q = (age * (0.85 + hj * 0.5)).clamp(0.0, 1.0);
+                let ease = q * q;
+                let px = x0 + (vp.0 - x0) * ease + (hj - 0.5) * 16.0 * (1.0 - q);
+                let py = y0 + (vp.1 - y0) * ease + (h2 - 0.5) * 12.0 * (1.0 - q);
+                let a = (1.0 - q) * 0.95;
+                if a < 0.04 {
+                    continue;
+                }
+                let ch = if q > 0.75 { '·' } else if hj > 0.55 { '*' } else { '·' };
+                ctx.put(px as i32, py as i32, ch, theme::RED.mul(a).mix(theme::AMBER, hj * 0.35));
+            }
+        }
+
         // 每次删除的闪光
         for dt in Self::DEL.iter() {
             let d = t - dt;
@@ -208,7 +234,8 @@ impl Scene for Abandon {
 // ════════════════════════════════════════════════════════════
 pub struct Isolation {
     parts: Particles,
-    shred: Vec<(i32, i32, char, Rgb, f32, f32)>,
+    /// 3D 碎片场：(x, y, z, delay, sp, heat)
+    shred3: Vec<(f32, f32, f32, f32, f32, f32)>,
     inited: bool,
 }
 
@@ -216,7 +243,7 @@ impl Isolation {
     pub fn new() -> Self {
         Isolation {
             parts: Particles::new(),
-            shred: Vec::new(),
+            shred3: Vec::new(),
             inited: false,
         }
     }
@@ -287,39 +314,57 @@ impl Scene for Isolation {
             return;
         }
 
-        // ── 阶段 2：清除碎片（2.55 ~ 6.7s）──
+        // ── 阶段 2：清除碎片（2.55 ~ 6.7s）—— 3D 碎片场被波前推走 ──
         if lt < 6.75 {
             let p = ((lt - 2.55) / 4.2).clamp(0.0, 1.0);
             if !self.inited {
                 self.inited = true;
-                for _ in 0..900 {
-                    let x = ctx.rng.irange(0, w);
-                    let y = ctx.rng.irange(0, h);
-                    let ch = *ctx.rng.pick(fx::SHRED);
-                    let col = theme::heat(ctx.rng.f()).mul(0.75);
-                    let delay = ctx.rng.range(0.0, 4.0);
-                    let sp = ctx.rng.range(0.6, 2.2);
-                    self.shred.push((x, y, ch, col, delay, sp));
+                let mut rng = fx::Rng::new(0x15A);
+                for _ in 0..820 {
+                    self.shred3.push((
+                        rng.range(-1.7, 1.7),
+                        rng.range(-0.85, 0.85),
+                        rng.range(-1.2, 1.2),
+                        rng.range(0.0, 3.5),
+                        rng.range(0.5, 1.8),
+                        rng.f(),
+                    ));
                 }
             }
-            for (x, y, ch, col, delay, sp) in self.shred.iter_mut() {
-                let age = (lt - 2.55) - *delay;
-                if age < 0.0 {
-                    if fx::hash2(*x, *y, 5) > 0.9 {
-                        ctx.put(*x, *y, '·', col.mul(0.35));
+            let mut r3 = fx3d::R3::new(w, h);
+            r3.cam_z = 3.2;
+            r3.focal = h as f32 * 2.0;
+            r3.begin();
+            let span = 5.8;
+            {
+                let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+                let xf = fx3d::Xform::new(lt * 0.05, 0.06 * (lt * 0.2).sin(), 0.0);
+                for (x, y, z, delay, sp, heat) in &self.shred3 {
+                    let age = (lt - 2.55) - *delay;
+                    let (wx, wy, wz, a) = if age < 0.0 {
+                        (*x, *y, *z, 0.55)
+                    } else {
+                        // 波前经过：向 +x 卷走并被吸向镜头
+                        let dx = age * age * *sp * 1.5;
+                        (
+                            x + dx,
+                            y + dx * 0.16,
+                            z + age * 1.2,
+                            (1.0 - age / 3.0).max(0.0),
+                        )
+                    };
+                    if a <= 0.03 {
+                        continue;
                     }
-                    continue;
+                    let rp = xf.apply(fx3d::Vec3::new(wx, wy, wz));
+                    let Some((sx, sy, d)) = r3.project(rp) else { continue };
+                    let dep = r3.depth01(d, span);
+                    let col = theme::heat(*heat)
+                        .mul(a * (0.75 + dep * 0.55))
+                        .mix(theme::CYAN, (1.0 - dep) * 0.2);
+                    let ch = if dep < 0.35 { '*' } else { '·' };
+                    r3.plot(&mut tg, sx, sy, d, ch, col, a.min(1.0));
                 }
-                // 被一股从左到右的波推走
-                let dx = age * age * *sp * 6.0;
-                let nx = *x + dx as i32;
-                let ny = *y + (dx * 0.25) as i32;
-                let a = (1.0 - age / 3.2).max(0.0);
-                if a <= 0.02 {
-                    continue;
-                }
-                let wob = ((*x as f32 * 0.3 + lt * 3.0).sin() * 2.0) as i32;
-                ctx.put(nx, ny + wob, *ch, col.mul(a));
             }
             // 波前
             let front = (p * (w as f32 * 1.25)) as i32 - 20;
@@ -461,19 +506,35 @@ impl Scene for Fragments {
         if ann > 0.0 {
             let y = r.y + 5; // 第 3 行下面那一行
             let x = r.x + 7 + 12;
+            let flick = 0.7 + 0.3 * (lt * 9.0).sin();
             for k in 0..11 {
-                ctx.putb(x + k, y, '^', theme::RED.mul(ann), theme::PANEL.mul(0.8));
+                ctx.putb(x + k, y, '^', theme::RED.mul(ann * flick), theme::PANEL.mul(0.8));
             }
             ctx.textb(
                 x + 13,
                 y,
                 "illegal argument: `me` is a process, not a Person",
-                theme::RED.mul(ann),
+                theme::RED.mul(ann * flick),
                 theme::PANEL.mul(0.8),
             );
             // 沿路径把违规计数累起来
             self.count += ((lt - 2.2) * 12.0 / 8.0) as i32;
             self.count %= 100_000;
+        }
+        // 面板下缘升起的余烬：代码在燃烧
+        for k in 0..40 {
+            let h1 = fx::hash2(k, 11, 71);
+            let h2 = fx::hash2(k, 23, 71);
+            let cyc = (lt * (0.4 + h1 * 0.5) + h1 * 4.0) % 1.0;
+            let px = r.x + 3 + (h2 * (r.w - 8) as f32) as i32;
+            let py = r.bottom() - (cyc * 8.0) as i32;
+            let a = (1.0 - cyc) * 0.85;
+            if a < 0.06 {
+                continue;
+            }
+            let col = if h1 > 0.5 { theme::AMBER } else { theme::RED };
+            let ch = fx::SPARK[((h1 * 7.0) as usize).min(6)];
+            ctx.put(px, py, ch, col.mul(a));
         }
         if lt > 1.2 {
             ctx.text(
@@ -613,8 +674,24 @@ impl Scene for Verdict {
                     ctx.textb(r.x + 14, y, v, col, theme::PANEL.mul(0.8));
                 }
             }
-            // 判决定的印章
+            // 判决定的印章：落章瞬间冲击波 + 整屏震动
             if p > 0.85 {
+                let stamp_age = lt - (5.2 + 5.0 * 0.85);
+                if stamp_age < 0.7 {
+                    let q = stamp_age / 0.7;
+                    let rr = q * h as f32 * 0.55;
+                    let a = (1.0 - q) * 0.85;
+                    ctx.c.ellipse(cx, cy + 2, rr * 2.1, rr, '●', theme::RED.mul(a), theme::VOID);
+                    ctx.c
+                        .ellipse(cx, cy + 2, rr * 1.5, rr * 0.72, '○', theme::AMBER.mul(a * 0.6), theme::VOID);
+                    ctx.flash((1.0 - q) * 0.28, theme::RED);
+                    let sh = ((stamp_age * 34.0).sin() * (1.0 - q) * 3.0) as i32;
+                    if sh != 0 {
+                        for y in ctx.r.y..=ctx.r.bottom() {
+                            ctx.c.row_shift(y, sh);
+                        }
+                    }
+                }
                 let bl = ((lt * 3.0) as i32) % 2 == 0;
                 if bl {
                     ctx.textc_glow(cy + 2, "▛▀▀▀▀▀▀▀▀▜  EXECUTE  ▙▄▄▄▄▄▄▄▄▟", theme::RED, theme::RED);

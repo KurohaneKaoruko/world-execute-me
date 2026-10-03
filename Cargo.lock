@@ -1315,7 +1315,7 @@ dependencies = [
 
 [[package]]
 name = "world-execute-me"
-version = "1.0.3"
+version = "1.2.0"
 dependencies = [
  "crossterm",
  "rodio",

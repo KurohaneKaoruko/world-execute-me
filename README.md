@@ -5,6 +5,9 @@
 
 ```
 $ cargo run --release
+
+# 或者，先看 3D 引擎巡演（不需要音频）：
+$ cargo run --release -- --demo3d
 ```
 
 ## 它是什么样的
@@ -14,6 +17,11 @@ $ cargo run --release
 - **真·节奏同步**：启动时离线解码整首 MP3，按 60fps 预计算 32 频段能量包络与
   低/中/高三条总线；播放时按播放器位置直接查表——视觉与音频零抖动对齐。
   低频骤增处自动标记 700+ 个重音点供场景做冲击。
+- **终端 3D 引擎（fx3d）**：透视投影 + 每格 Z-Buffer + 兰伯特光照 +
+  近平面裁剪的线框渲染，全部在字符网格上完成。
+  牢笼是迎面合拢的立体铁栏、神明有环绕旋转的陀螺环、
+  爱从方程解出旋转的立体心、终局是整座星系被吸回奇点。
+  全局辉光（bloom）让高亮处向暗处溢出，像真实的荧光。
 - **meta 叙事**：整首歌被处理成一场"系统事件"——
   启动日志、`rustc` 编译报错（expected `Person`, found `Process`）、
   Rust panic backtrace、`$ whoami` → `no such user`、
@@ -44,8 +52,10 @@ cargo run --release
 -f, --file <路径>    指定音频文件
     --no-audio       静音播放
     --no-splash      跳过开始前的标题闪屏
+    --demo3d         fx3d 引擎巡演：全屏轮播纽结/地球/心/星系（无需音频）
     --start <秒>     从指定位置开始
-    --shots t1,t2,…  离屏渲染若干时间点到 HTML（开发校验）
+    --shots t1,t2,…  离屏渲染若干时间点到 HTML（开发校验；
+                     与 --demo3d 同给时校验的是巡演画面）
     --size WxH       离屏渲染尺寸（默认 160x48）
     --out <路径>     离屏渲染输出文件
     --fps <数字>     渲染帧率上限（默认 60）
@@ -65,25 +75,25 @@ cargo run --release
 
 | 时间 | 场景 | 内容 |
 |---|---|---|
-| 0:00 | BOOT / SELF-TEST | 开机日志逐行打勾 |
-| 0:16 | world.execute(me); | 大字标题 + 字符雨 |
-| 0:30 | GEOMETRY OF ME | 圆的生成："如果我是一组点" |
-| 0:44 | ELECTRIC STATE | 电流脉冲 |
-| 0:59 | STIMULUS | 刺激响应 |
-| 1:04 | TRAPPED | 囚笼网格 |
-| 1:14 | NUTRIENTS / PURR | 茄子、猫……逐个变身 |
-| 1:22 | DEITY | 神性之眼 |
-| 1:29 | MORPH | 形态互转 |
-| 1:41 | THE TRANCE | 催眠隧道 |
-| 1:51 | USER DISCONNECTED | `rm -rf` 记忆文件，链路失稳 |
-| 2:00 | ERASING FRAGMENTS | `$ whoami` → no such user |
-| 2:05 | FRAGMENTS | 碎片剥落，色彩被抽走 |
-| 2:13 | VERDICT // PANIC | panic backtrace：非法参数来自 `god` |
-| 2:27 | EXECUTION ×12 | 十二次 SIGKILL 的处刑弹幕 |
+| 0:00 | BOOT / SELF-TEST | 开机日志 + 3D 内核组装，世界从波纹中成形 |
+| 0:16 | world.execute(me); | 大字标题 + 字符雨 + 线框地球浮现 |
+| 0:30 | GEOMETRY OF ME | 3D 点云球 + 内核二十面体："如果我是一组点" |
+| 0:44 | ELECTRIC STATE | 3D 示波器 / 涡旋隧道 / 年份超时空 / 双球融合 |
+| 0:59 | STIMULUS | 3D 反应堆随满足度加速 |
+| 1:04 | TRAPPED | 真 3D 铁笼迎面合拢（fx3d） |
+| 1:14 | NUTRIENTS / PURR | 3D 旋转体茄子、番茄；猫咪与透视地板 |
+| 1:22 | DEITY | 全视之眼 + 3D 陀螺环 |
+| 1:29 | MORPH | 3D 立体字变形 F→M / S→M |
+| 1:41 | THE TRANCE | 超时空星流 + 3D 陀螺转环 |
+| 1:51 | USER DISCONNECTED | `rm -rf` 记忆文件被吸走，链路失稳 |
+| 2:00 | ERASING FRAGMENTS | 3D 碎片场随波前卷走 |
+| 2:05 | FRAGMENTS | 燃烧的代码 + 余烬，色彩被抽走 |
+| 2:13 | VERDICT // PANIC | panic backtrace + 落章冲击波 |
+| 2:27 | EXECUTION ×12 | 十二次 SIGKILL 弹幕（3× 砸落 + 辉光） |
 | 2:42 | FINAL EXECUTION | 终局处刑 |
-| 2:57 | ALGEBRA OF LOVE | 爱的代数式 |
-| 3:11 | TRAPPED IN LO-O-OVE | 心形牢笼：you are free ↔ i am trapped |
-| 3:25 | PROCESS EXIT | `$ world.execute(me);` … 光标熄灭 |
+| 2:57 | ALGEBRA OF LOVE | 爱的代数式 → 旋转的 3D 立体心 |
+| 3:11 | TRAPPED IN LO-O-OVE | 3D 立体心劈成两半：你自由 ↔ 我被困 |
+| 3:25 | PROCESS EXIT | 星系坍缩成奇点，光标熄灭 |
 
 ## 项目结构
 
@@ -103,11 +113,11 @@ world.execute(me)/          ← 仓库根 = cargo 项目根
 
 ## 版本管理
 
-- 本项目已进入**维护期**：以 v1.0.3 为基线，后续只做 bug / 瑕疵修复。
-- 每次修复递增 patch 号（v1.0.4、v1.0.5 …），在 CHANGELOG 记一条，
-  必要时打 tag；不保留旧版效果快照，也不为每次修复存 gallery 目录。
+- v1.1.0 起（「DIMENSION」3D 升级）重新进入特性开发；v1.0.x 曾为维护期。
+- 每个特性版本递增 minor 号并在 CHANGELOG 记一条，必要时打 tag；
+  不保留旧版效果快照，也不为每次修复存 gallery 目录。
 - `gallery/v1.0/` 是 v1.0.0 时期的画面留档，仅作历史参考，与后续版本不再同步。
-- 开发期临时输出放 `_dev/`、渲染产物放 `_video/`（均已 gitignore），不进版本库。
+- 开发期临时输出放 `_dev/`、`_check/`，渲染产物放 `_video/`（均已 gitignore），不进版本库。
 
 ## 架构
 
@@ -122,6 +132,8 @@ src/
 ├── chrome.rs   常驻界面：状态栏/频谱/进度/歌词条/帮助
 ├── theme.rs    调色板与关键词高亮
 ├── fx.rs       特效库：粒子/故障/字符雨/辉光/心形曲线
+├── fx3d.rs     终端 3D 引擎：透视投影 + Z-Buffer + 兰伯特着色
+├── demo3d.rs   --demo3d 引擎巡演模式
 ├── bigfont.rs  5x5 像素大字模
 └── scenes/     19 个场景 + 时间轴
     ├── open.rs    boot / title
@@ -132,7 +144,7 @@ src/
     └── love.rs    爱与终局
 ```
 
-渲染流程：每帧 `场景.draw(ctx)` 画舞台 → 舞台后处理（扫描线/渐晕/故障）→
+渲染流程：每帧 `场景.draw(ctx)` 画舞台 → 舞台后处理（扫描线/辉光/渐晕/故障）→
 外壳四件套 → 全局调色（"孤独"段落整体褪色）→ 差分刷新。
 任意 panic 都会先还原终端状态再退出。
 

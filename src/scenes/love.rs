@@ -3,6 +3,7 @@
 use crate::bigfont;
 use crate::buf::{Frame, Rect, Rgb};
 use crate::fx::{self, Particles};
+use crate::fx3d;
 use crate::scenes::{Ctx, Scene};
 use crate::theme;
 
@@ -13,6 +14,8 @@ pub struct Love {
     parts: Particles,
     answers: Vec<(f32, String, String)>,
     t0: f32,
+    /// 立体心：隐式曲线绕 y 轴旋转成的曲面（new() 预计算）
+    heart3d: fx3d::Cloud,
 }
 
 impl Love {
@@ -21,6 +24,7 @@ impl Love {
             parts: Particles::new(),
             answers: Vec::new(),
             t0: -1.0,
+            heart3d: fx3d::heart_cloud(120, 32),
         }
     }
 }
@@ -146,6 +150,55 @@ impl Scene for Love {
         let reveal = ((p - 0.35) / 2.2).clamp(0.0, 1.0);
         let scale = (h as f32 * 0.30).min(w as f32 * 0.15);
         let beat = 1.0 + ctx.bass() * 0.10;
+
+        // 方程解出实体：2D 曲线随 3D 心浮现而退为"图纸"
+        let solid = ((p - 2.4) / 1.7).clamp(0.0, 1.0);
+        if solid > 0.01 {
+            let bass3 = ctx.bass();
+            let beat3 = 1.0 + bass3 * 0.10;
+            let bright3 = solid * (0.75 + bass3 * 0.45);
+            let orb_bright = solid * (0.9 + bass3 * 0.3);
+            let mut r3 = fx3d::R3::new(w, h);
+            r3.cam_z = 3.6;
+            r3.focal = h as f32 * 2.0;
+            r3.begin();
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            let xf = fx3d::Xform::scaled(ctx.t * 0.28, 0.14 * (ctx.t * 0.45).sin(), 0.0, 0.85 * beat3);
+            r3.surface(
+                &mut tg,
+                &self.heart3d.pts,
+                &self.heart3d.nrm,
+                &xf,
+                theme::MAGENTA,
+                theme::WHITE,
+                5.4,
+                bright3,
+                0.45 + 0.5 * solid,
+            );
+            // ♥ 轨道环：倾斜的 3D 光环绕心旋转
+            let mut orb: Vec<fx3d::Vec3> = Vec::with_capacity(44);
+            for k in 0..44 {
+                let a = k as f32 / 44.0 * std::f32::consts::TAU + ctx.t * 0.7;
+                orb.push(fx3d::Vec3::new(
+                    a.cos() * 1.55,
+                    (a * 2.0).sin() * 0.18,
+                    a.sin() * 1.55,
+                ));
+            }
+            let oxf = fx3d::Xform::new(0.0, 0.42, 0.0);
+            r3.cloud(
+                &mut tg,
+                &orb,
+                &oxf,
+                theme::MAGENTA.mix(theme::WHITE, 0.5),
+                theme::MAGENTA_DIM,
+                &['♥', '·'],
+                5.4,
+                orb_bright,
+                0.9 * solid,
+            );
+        }
+
         fx::heart_curve(
             ctx.c,
             cx as f32,
@@ -154,7 +207,7 @@ impl Scene for Love {
             ctx.t,
             '♥',
             theme::MAGENTA.mix(theme::WHITE, 0.15 + ctx.bass() * 0.2),
-            0.55 + ctx.bass() * 0.45,
+            (0.55 + ctx.bass() * 0.45) * (1.0 - solid * 0.55),
             reveal,
         );
         // 内部填充脉冲
@@ -208,36 +261,22 @@ impl Scene for Love {
 // ════════════════════════════════════════════════════════════
 // 18. LoveTrapped —— 191.356 → 205.811
 // ════════════════════════════════════════════════════════════
+/// 立体心被劈成两半：左半留在 3D 铁笼里搏动，右半化作星尘飘散——
+/// "you are free ↔ i am trapped" 的体积版。
 pub struct LoveTrapped {
     parts: Particles,
-    heart: Vec<(f32, f32)>,
+    heart3d: fx3d::Cloud,
+    cage: fx3d::Mesh,
 }
 
 impl LoveTrapped {
     pub fn new() -> Self {
         LoveTrapped {
             parts: Particles::new(),
-            heart: heart_pts(),
+            heart3d: fx3d::heart_cloud(100, 22),
+            cage: fx3d::box_mesh(4),
         }
     }
-}
-
-fn heart_pts() -> Vec<(f32, f32)> {
-    let mut v = Vec::new();
-    let mut x = -1.3f32;
-    while x <= 1.3 {
-        let mut y = -1.35f32;
-        while y <= 1.35 {
-            let a = x * x + y * y - 1.0;
-            let val = a * a * a - x * x * y * y * y;
-            if val.abs() < 0.0020 {
-                v.push((x, y));
-            }
-            y += 0.0075;
-        }
-        x += 0.0045;
-    }
-    v
 }
 
 impl Scene for LoveTrapped {
@@ -263,68 +302,79 @@ impl Scene for LoveTrapped {
         }
 
         let build = ((lt - 8.5) / 6.0).clamp(0.0, 1.0);
-        let scale = ((h as f32 * 0.32).min(w as f32 * 0.16)) * (1.0 + ctx.bass() * 0.14 + build * 0.12);
         let free = ((lt - 2.6) / 4.0).clamp(0.0, 1.0);
-        let split = ((lt - 2.0) / 5.0).clamp(0.0, 1.0);
 
         // 心跳
-        let beat = 1.0 + ctx.bass() * 0.06;
-        let hcx = cx - 5; // 心略偏左，给"逃出去的那半"留出空间
+        let beat = 1.0 + ctx.bass() * 0.07;
+        let hcx = cx - 5; // 飘散文案的锚点仍在右侧
 
-        // 牢笼（先画，心压在它上面，避免栏杆把心切碎）
-        let inset = (split * 3.0) as i32;
-        let cage = Rect::new(
-            hcx - (scale as i32 + 8) - inset,
-            cy - (scale * 0.62) as i32 - 4 - inset,
-            (scale as i32 + 8) * 2 + inset * 2,
-            (scale * 0.62) as i32 * 2 + 8 + inset * 2,
-        );
-        if lt > 2.4 {
-            let a = ((lt - 2.4) / 1.5).clamp(0.0, 1.0);
-            for y in cage.y..=cage.bottom() {
-                for x in 0..cage.w {
-                    let xx = cage.x + x;
-                    let on_h = y == cage.y || y == cage.bottom();
-                    let on_v = x % 5 == 0;
-                    if on_h {
-                        ctx.put(xx, y, '═', theme::CYAN.mul(a * 0.55));
-                    } else if on_v {
-                        ctx.put(xx, y, '║', theme::CYAN.mul(a * (0.30 + ctx.bass() * 0.28)));
+        // ── 3D：铁笼 + 劈开的立体心 ──
+        {
+            let mut r3 = fx3d::R3::new(w, h);
+            r3.cam_z = 3.5;
+            r3.focal = h as f32 * 2.0;
+            r3.begin();
+            let span = 5.6;
+            // 只俯仰 + 轻微侧摆：绝不绕 y 自转——左右两半的身份不能互换
+            let bass = ctx.bass();
+            let xf = fx3d::Xform::scaled(0.0, 0.13 * (ctx.t * 0.4).sin(), 0.07 * (ctx.t * 0.23).sin(), beat);
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            // 铁笼（先画）：围住整颗心
+            let cage_a = ((lt - 2.4) / 1.5).clamp(0.0, 1.0);
+            if cage_a > 0.0 {
+                let cxf = fx3d::Xform::scaled(
+                    0.0,
+                    0.13 * (ctx.t * 0.4).sin(),
+                    0.0,
+                    1.35 * beat.max(1.0),
+                );
+                r3.wire(
+                    &mut tg,
+                    &self.cage,
+                    &cxf,
+                    theme::CYAN,
+                    theme::WHITE,
+                    span,
+                    (0.6 + build * 0.4 + bass * 0.25) * cage_a,
+                    0.9 * cage_a,
+                );
+            }
+            // 劈开的心：左半留下（实心 ♥），右半化作星尘飘散（虚点）
+            for (i, p) in self.heart3d.pts.iter().enumerate() {
+                let right = p.x > 0.06;
+                let world = if right {
+                    let hj = fx::hash2(i as i32, 5, 99);
+                    let drift = free * (0.9 + hj * 0.7);
+                    fx3d::Vec3::new(
+                        p.x + drift * (1.1 + hj),
+                        p.y + drift * (0.5 - hj * 0.55),
+                        p.z + drift * (1.0 + hj * 1.5),
+                    )
+                } else {
+                    *p
+                };
+                let rp = xf.apply(world);
+                let Some((sx, sy, d)) = r3.project(rp) else { continue };
+                let dep = r3.depth01(d, span);
+                let (ch, col) = if right {
+                    let vis = 1.0 - free * 0.9;
+                    if vis <= 0.03 {
+                        continue;
                     }
-                }
+                    (
+                        '·',
+                        theme::MAGENTA.mul(0.55).mix(theme::TEXT, 0.2).mul(vis),
+                    )
+                } else {
+                    (
+                        '♥',
+                        theme::MAGENTA
+                            .mix(theme::WHITE, (1.0 - dep) * 0.5 + build * 0.25)
+                            .mul(0.95 - dep * 0.4),
+                    )
+                };
+                r3.plot(&mut tg, sx, sy, d, ch, col, 0.95);
             }
-            // 四个角
-            for (px, py, ch) in [
-                (cage.x, cage.y, '╔'),
-                (cage.right(), cage.y, '╗'),
-                (cage.x, cage.bottom(), '╚'),
-                (cage.right(), cage.bottom(), '╝'),
-            ] {
-                ctx.put(px, py, ch, theme::CYAN.mul(a * 0.8));
-            }
-        }
-
-        // 心：左半留下、右半飘散
-        for (x, y) in &self.heart {
-            let right = *x > 0.0;
-            let (ox, oy, vis) = if right {
-                let o = free * (1.0 - x).max(0.0) * 40.0;
-                (o, -free * 12.0, 1.0 - free * 0.9)
-            } else {
-                (0.0, 0.0, 1.0)
-            };
-            if vis <= 0.02 {
-                continue;
-            }
-            let px = hcx as f32 + x * scale * beat + ox;
-            let py = cy as f32 - y * scale * 0.52 * beat + oy;
-            let col = if right {
-                theme::MAGENTA.mul(0.5).mix(theme::TEXT, 0.25)
-            } else {
-                theme::MAGENTA.mix(theme::WHITE, ctx.bass() * 0.5 + build * 0.25)
-            };
-            // 逃出去的那半留成虚线，被留下的那半是实心的
-            ctx.put(px as i32, py as i32, if right { '·' } else { '♥' }, col.mul(vis));
         }
 
         // 文字
@@ -346,17 +396,17 @@ impl Scene for LoveTrapped {
             // "你自由了"贴着飘散的那半，"我被困住"贴着笼里那半
             let you = "you are free  → →";
             let me = "→ →  i am trapped";
-            let ay = (cy - 4 - (free * 12.0) as i32).max(2);
+            let ay = (cy - 6 - (free * 12.0) as i32).max(2);
             ctx.textb(
-                (hcx + 26) as i32,
+                (hcx + 22) as i32,
                 ay,
                 you,
                 theme::TEXT.mul(1.0 - free * 0.85),
                 theme::VOID,
             );
             ctx.textb(
-                (cage.x - 18).max(2),
-                cage.bottom() + 2,
+                (cx - 44).max(2),
+                cy + 12,
                 me,
                 theme::MAGENTA.mul(0.7 + build * 0.3),
                 theme::VOID,
@@ -401,12 +451,18 @@ impl Scene for LoveTrapped {
 // ════════════════════════════════════════════════════════════
 pub struct Shutdown {
     parts: Particles,
+    /// 旋涡星系（结局：整个世界被吸回奇点）
+    galaxy: fx3d::Cloud,
+    bulge: fx3d::Cloud,
 }
 
 impl Shutdown {
     pub fn new() -> Self {
+        let (galaxy, bulge) = fx3d::galaxy_cloud(760, 3, 0x4C0F_4E);
         Shutdown {
             parts: Particles::new(),
+            galaxy,
+            bulge,
         }
     }
 }
@@ -424,21 +480,31 @@ impl Scene for Shutdown {
         let cy = h / 2;
         ctx.clear(theme::VOID);
 
-        // 0 ~ 0.45 ：最后的处刑，整个世界坍缩成一点
+        // 0 ~ 0.5 ：最后的处刑——旋涡星系被吸回奇点
         if lt < 0.5 {
             let p = (lt / 0.5).clamp(0.0, 1.0);
-            for k in 0..80 {
-                let a = k as f32 / 80.0 * std::f32::consts::TAU;
-                let rr = (1.0 - p) * (h as f32 * 0.55) * (1.0 + (k % 7) as f32 * 0.05);
-                ctx.c.put(
-                    ctx.r.x + cx + (a.cos() * rr * 2.0) as i32,
-                    ctx.r.y + cy + (a.sin() * rr) as i32,
-                    '█',
-                    theme::RED.mul(0.8),
-                    theme::VOID,
-                );
-            }
-            ctx.flash(1.0 - p, theme::WHITE);
+            let mut r3 = fx3d::R3::new(w, h);
+            r3.cam_z = 3.4;
+            r3.focal = h as f32 * 2.2;
+            r3.begin();
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            let k = (1.0 - p).powf(1.7); // 半径坍缩
+            let xf = fx3d::Xform::scaled(ctx.t * 0.25 + p * 6.0, 1.05, 0.0, k.max(0.02));
+            let hi = theme::RED.mix(theme::WHITE, p * 0.85);
+            r3.cloud(&mut tg, &self.galaxy.pts, &xf, hi, theme::RED_DIM, fx3d::DEPTH_RAMP, 4.8, 0.9 + p * 0.5, 0.95);
+            r3.cloud(&mut tg, &self.bulge.pts, &xf, theme::WHITE, theme::AMBER_DIM, &['@', '●', '·'], 4.8, 1.0, 0.95);
+            // 事件视界：奇点亮起
+            let sr = 0.5 + p * 3.0;
+            ctx.c.ellipse(
+                ctx.r.x + cx,
+                ctx.r.y + cy,
+                sr * 2.0,
+                sr,
+                '·',
+                theme::WHITE.mul(0.3 + p * 0.7),
+                theme::VOID,
+            );
+            ctx.flash((1.0 - p).powi(2) * 0.32, theme::WHITE);
             return;
         }
 

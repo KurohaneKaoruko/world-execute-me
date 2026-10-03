@@ -10,7 +10,9 @@ mod audio;
 mod bigfont;
 mod buf;
 mod chrome;
+mod demo3d;
 mod fx;
+mod fx3d;
 mod lyrics;
 mod scenes;
 mod term;
@@ -34,6 +36,7 @@ struct Args {
     no_audio: bool,
     shots: Option<Vec<f32>>,
     render_video: Option<PathBuf>,
+    demo3d: bool,
     size: (i32, i32),
     out: PathBuf,
     start: f32,
@@ -47,6 +50,7 @@ fn parse_args() -> Args {
         no_audio: false,
         shots: None,
         render_video: None,
+        demo3d: false,
         size: (0, 0),
         out: PathBuf::from("preview.html"),
         start: 0.0,
@@ -67,6 +71,7 @@ fn parse_args() -> Args {
                 let v = it.next().unwrap_or_default();
                 a.render_video = Some(PathBuf::from(v));
             }
+            "--demo3d" => a.demo3d = true,
             "--shots" => {
                 let v = it.next().unwrap_or_default();
                 let times: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
@@ -107,6 +112,7 @@ fn parse_args() -> Args {
   -f, --file <路径>    指定音频文件（默认 {DEFAULT_TRACK}）
       --no-audio       静音播放（时间轴走墙钟，画面完全一致）
       --no-splash      跳过开始前的标题闪屏
+      --demo3d         fx3d 引擎巡演：全屏轮播纽结/地球/心/星系（无需音频）
       --start <秒>     从指定位置开始播放
       --shots t1,t2,…  离屏渲染若干时间点的画面到 HTML（开发校验用）
       --render-video <目录>
@@ -210,10 +216,28 @@ fn render_frame(
         seg.scene.draw(&mut ctx);
     }
 
-    // 舞台后处理：CRT 扫描线 + 渐晕（只作用舞台，界面保持清晰）
+    // 舞台后处理：场景切换的 CRT 换台闪断 → 扫描线 → 辉光 → 渐晕
     let stage = lay.stage;
     let mut sub = stage_take(cv, stage);
+    if idx > 0 {
+        let tr = fx::pulse(v.t - start, 0.04, 0.20);
+        if tr > 0.0 {
+            let mut rr = fx::Rng::new(v.frame.wrapping_mul(31) ^ 0x5EED);
+            fx::glitch(&mut sub, &mut rr, 0.14 * tr, v.t);
+            for c in sub.cells.iter_mut() {
+                c.fg = c.fg.mix(theme::WHITE, tr * 0.22);
+                c.bg = c.bg.mix(theme::WHITE, tr * 0.12);
+            }
+        }
+    }
     fx::scanlines(&mut sub, v.t, 0.055);
+    // 辉光：处刑段随打击感增强，其余时间温和常驻
+    let bloom_gain = if (147.0..164.0).contains(&v.t) {
+        0.40 + v.hit * 0.25
+    } else {
+        0.34
+    };
+    fx::bloom(&mut sub, 0.58, bloom_gain);
     fx::vignette(&mut sub, 0.28);
     let glitch_amt = if (147.0..164.0).contains(&v.t) {
         0.30 + v.hit * 0.25
@@ -271,8 +295,14 @@ fn main() {
     let exe_hint = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "world-execute-me".into());
-    println!("\x1b[36m▌\x1b[0m \x1b[1mworld.execute(me);\x1b[0m  \x1b[2mterminal MV · v1.0.3\x1b[0m");
+    println!("\x1b[36m▌\x1b[0m \x1b[1mworld.execute(me);\x1b[0m  \x1b[2mterminal MV · v{}\x1b[0m", env!("CARGO_PKG_VERSION"));
     println!("\x1b[2m  {exe_hint}\x1b[0m");
+
+    // ── 0. 3D 引擎巡演模式：不需要音频与歌词（与 --shots 同给时走离屏校验）──
+    if args.demo3d && args.shots.is_none() {
+        demo3d::run();
+        return;
+    }
 
     // ── 1. 读取音频 ──
     let path = resolve_track(&args.file);
@@ -347,7 +377,7 @@ fn main() {
 
     // ── 离屏模式 ──
     if let Some(times) = args.shots.clone() {
-        shots(&mut tl, &ly, &times, args.size, &args.out, spec);
+        shots(&mut tl, &ly, &times, args.size, &args.out, spec, args.demo3d);
         return;
     }
 
@@ -597,7 +627,8 @@ fn render_video(
     );
 }
 
-/// 离屏渲染若干时间点到 HTML，用于开发期视觉校验
+/// 离屏渲染若干时间点到 HTML，用于开发期视觉校验。
+/// 带 `--demo3d` 时校验的是 3D 巡演画面而非正片时间轴。
 fn shots(
     tl: &mut Timeline,
     ly: &lyrics::Lyrics,
@@ -605,6 +636,7 @@ fn shots(
     size: (i32, i32),
     out: &Path,
     spec: audio::Spectrum,
+    demo3d: bool,
 ) {
     let (w, h) = if size.0 > 0 && size.1 > 0 {
         size
@@ -625,6 +657,12 @@ fn shots(
     for &t in times {
         let mut v = view::View::new();
         let mut aud = audio::Audio::silent(info.clone(), spec.clone());
+        if demo3d {
+            // 3D 巡演不需要预热：draw 是纯时间函数
+            demo3d::draw(&mut canvas, t);
+            frames.push((t, canvas.clone()));
+            continue;
+        }
         // 预热：从 t-4s 开始按 60fps 逐帧步进，把依赖 dt 累加的状态
         // （粒子、出字动画、场景内部计时）推到目标时刻的真实位置。
         // 否则离屏单帧看到的是"刚进场景第一帧"的假象。

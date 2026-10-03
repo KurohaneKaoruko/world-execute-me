@@ -148,6 +148,40 @@ pub fn vignette(cv: &mut Canvas, strength: f32) {
     }
 }
 
+/// 辉光（bloom）：把高亮单元向四邻"溢出"。
+/// 先收集再写入，避免同帧内互相反馈；空格子染一点背景色，形成柔和光晕。
+pub fn bloom(cv: &mut Canvas, threshold: f32, gain: f32) {
+    let mut bright: Vec<(usize, Rgb, f32)> = Vec::new();
+    for (i, c) in cv.cells.iter().enumerate() {
+        if c.ch == SKIP || c.ch == ' ' {
+            continue;
+        }
+        let lum = c.fg.lum();
+        if lum > threshold {
+            bright.push((i, c.fg, ((lum - threshold) / (1.0 - threshold).max(0.01)).clamp(0.0, 1.0)));
+        }
+    }
+    let w = cv.w;
+    let h = cv.h;
+    for (i, col, k) in bright {
+        let x = (i as i32) % w;
+        let y = (i as i32) / w;
+        let a = k * gain;
+        let spill = col.mul(a * 0.55);
+        for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+            if nx < 0 || ny < 0 || nx >= w || ny >= h {
+                continue;
+            }
+            let j = (ny * w + nx) as usize;
+            let c = &mut cv.cells[j];
+            if c.ch != SKIP && c.ch != ' ' {
+                c.fg = c.fg.mix(col, a * 0.30);
+            }
+            c.bg = c.bg.add(spill.mul(0.16));
+        }
+    }
+}
+
 /// 故障：随机行位移 + 字符腐蚀 + 色散
 pub fn glitch(cv: &mut Canvas, rng: &mut Rng, amount: f32, t: f32) {
     if amount <= 0.001 {

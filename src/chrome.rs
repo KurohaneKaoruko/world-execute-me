@@ -78,7 +78,7 @@ pub fn draw_header(cv: &mut Canvas, v: &View, ly: &Lyrics, dur: f32) {
     let mut x = 1;
     let brand = " world.execute(me); ";
     x = cv.text(x, 0, brand, theme::VOID, abg) + 1;
-    cv.text(x, 0, "v1.0.0", theme::TEXT_FAINT, bg);
+    cv.text(x, 0, &format!("v{}", env!("CARGO_PKG_VERSION")), theme::TEXT_FAINT, bg);
     x += 8;
 
     let scene = format!(

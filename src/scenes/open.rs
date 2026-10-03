@@ -3,17 +3,26 @@
 use crate::bigfont;
 use crate::buf::{Frame, Rect};
 use crate::fx::{self, Rain};
+use crate::fx3d;
 use crate::scenes::{Ctx, Scene};
 use crate::theme;
 
 // ════════════════════════════════════════════════════════════
 // 1. Boot —— 0.000 → 16.000
 // ════════════════════════════════════════════════════════════
-pub struct Boot;
+pub struct Boot {
+    /// 右栏的 3D 内核（随自检进度旋转的二十面体）
+    ico: fx3d::Mesh,
+    /// SIMULATION 阶段成形的经纬球
+    globe: fx3d::Mesh,
+}
 
 impl Boot {
     pub fn new() -> Self {
-        Boot
+        Boot {
+            ico: fx3d::icosa_mesh(),
+            globe: fx3d::latlong_mesh(12, 8, 1.0),
+        }
     }
 }
 
@@ -173,13 +182,21 @@ impl Scene for Boot {
                         theme::PANEL_HI,
                     );
                 }
-                // 核心：随低频脉动
+                // 核心：随低频脉动的 3D 内核（自检 = 把多面体拼起来）
                 let cy = rp.bottom() - 5;
                 let cx = rp.cx();
-                let r = 2.0 + ctx.bass() * 3.0;
-                ctx.c
-                    .ellipse(cx, cy, r * 2.0, r, '·', theme::CYAN.mul(0.55), theme::PANEL.mul(0.6));
-                ctx.putb(cx, cy, '◆', theme::WHITE.mix(theme::CYAN, 0.4 + ctx.bass() * 0.6), theme::PANEL.mul(0.6));
+                let core_bass = ctx.bass();
+                {
+                    let mut r3 = fx3d::R3::new(w, h);
+                    r3.cx = cx as f32;
+                    r3.cy = cy as f32;
+                    r3.cam_z = 3.0;
+                    r3.focal = 21.0;
+                    r3.begin();
+                    let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+                    let xf = fx3d::Xform::scaled(t * 0.6, 0.45, t * 0.3, 1.0 + core_bass * 0.18);
+                    r3.wire(&mut tg, &self.ico, &xf, theme::CYAN, theme::WHITE, 4.4, 0.85 + core_bass * 0.3, 0.95);
+                }
                 ctx.textb(rp.x + 2, rp.bottom() - 1, "CORE 0x4C4F5645", theme::TEXT_FAINT, theme::PANEL.mul(0.6));
             }
 
@@ -192,6 +209,16 @@ impl Scene for Boot {
 
         // ── 阶段 2：SIMULATION（11.2~16）──
         let p = ((t - 11.2) / 4.8).clamp(0.0, 1.0);
+        // 世界成形：经纬球从波纹里长出来
+        {
+            let mut r3 = fx3d::R3::new(w, h);
+            r3.cam_z = 3.0;
+            r3.focal = h as f32 * 2.0;
+            r3.begin();
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            let xf = fx3d::Xform::scaled(t * 0.3, 0.3, 0.0, 0.5 + p * 0.75);
+            r3.wire(&mut tg, &self.globe, &xf, theme::CYAN, theme::WHITE, 4.6, 0.75 + p * 0.55, 0.95 * p);
+        }
         for y in (1..h).step_by(1) {
             for x in (0..w).step_by(2) {
                 let d = (((x as f32 - w as f32 / 2.0).powi(2) + ((y as f32 - h as f32 / 2.0) * 2.2).powi(2))
@@ -262,11 +289,18 @@ impl Scene for Boot {
 // ════════════════════════════════════════════════════════════
 pub struct Title {
     rain: Option<Rain>,
+    /// "world" 的具象化：线框地球 + 大陆点尘（5.5s 后从字符雨后浮现）
+    globe: fx3d::Mesh,
+    land: Vec<fx3d::Vec3>,
 }
 
 impl Title {
     pub fn new() -> Self {
-        Title { rain: None }
+        Title {
+            rain: None,
+            globe: fx3d::latlong_mesh(14, 9, 1.0),
+            land: fx3d::fib_sphere(260),
+        }
     }
 }
 
@@ -297,6 +331,27 @@ impl Scene for Title {
             );
         }
         fx::data_dust(ctx.c, ctx.r, t, 0.012, theme::BLUE);
+
+        // "world" 的具象化：线框地球从字符雨后缓缓浮现，转到收束为止
+        let ga = if (5.5..12.6).contains(&t) {
+            let ain = ((t - 5.5) / 1.6).clamp(0.0, 1.0);
+            let gout = if t > 11.4 { ((12.6 - t) / 1.2).clamp(0.0, 1.0) } else { 1.0 };
+            fx::smooth(ain) * gout
+        } else {
+            0.0
+        };
+        if ga > 0.01 {
+            let mut r3 = fx3d::R3::new(w, h);
+            r3.cam_z = 3.0;
+            r3.focal = h as f32 * 2.0;
+            r3.begin();
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            let lxf = fx3d::Xform::scaled(t * 0.30 + 0.4, 0.28, 0.0, 1.49);
+            r3.cloud(&mut tg, &self.land, &lxf, theme::GREEN, theme::GREEN_DIM, fx3d::DEPTH_RAMP, 5.4, 0.85 * ga, 0.9 * ga);
+            // 线框最后画：正面赢 Z-Buffer，背面被大陆点尘正确遮挡
+            let xf = fx3d::Xform::scaled(t * 0.30, 0.28, 0.0, 1.5);
+            r3.wire(&mut tg, &self.globe, &xf, theme::CYAN, theme::WHITE, 5.4, 1.25 * ga, 0.9 * ga);
+        }
 
         // 中央：标题
         let l1 = "world.";

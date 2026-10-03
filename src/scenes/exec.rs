@@ -148,7 +148,7 @@ impl Scene for Barrage {
         self.parts.update(ctx.dt, 10.0, 0.25);
         self.parts.draw(ctx.c);
 
-        // 每次连击的"盖章"：一个大 EXECUTION 出现在随机位置然后淡出
+        // 每次连击的"盖章"：一个大 EXECUTION 出现在随机位置然后淡出，砸落带冲击环
         for s in self.stamps.iter_mut() {
             s.0 += ctx.dt;
         }
@@ -156,6 +156,11 @@ impl Scene for Barrage {
         for (age, x, y, n) in self.stamps.iter() {
             let a = (1.0 - age / 0.55).max(0.0);
             let _ = n;
+            if *age < 0.45 {
+                let q = age / 0.45;
+                let rr = q * 15.0;
+                ctx.c.ellipse(*x, *y + 3, rr * 2.1, rr, '●', theme::RED.mul((1.0 - q) * 0.6), theme::VOID);
+            }
             big_word(
                 ctx.c,
                 *x,
@@ -167,19 +172,18 @@ impl Scene for Barrage {
             );
         }
 
-        // 中央大字（始终 2 倍，砸在画面正中）
-        let pop = fx::pulse(self.hit_t, 0.03, 0.5);
+        // 中央大字（命中瞬间 3× 砸落 → 回落 2×，持续弹跳）
+        let pop_sc = if self.hit_t < 0.14 { 3 } else { 2 };
         let wave = (self.hit_t * 22.0).sin() * (1.0 - self.hit_t.min(1.0));
         big_word(
             ctx.c,
             w / 2,
-            21 + (wave as i32),
+            19 + (wave as i32),
             "EXECUTION",
             theme::WHITE.mix(theme::RED, 0.15 + self.hit_t * 0.45),
             theme::VOID,
-            2,
+            pop_sc,
         );
-        let _ = pop;
 
         // 连击计数
         let chip = format!(" EXECUTION {:02}/12 ", idx.min(12));

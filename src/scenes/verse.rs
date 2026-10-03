@@ -3,6 +3,7 @@
 use crate::bigfont;
 use crate::buf::{Frame, Rect};
 use crate::fx::{self, Particles};
+use crate::fx3d;
 use crate::scenes::{Ctx, Scene};
 use crate::theme;
 
@@ -27,25 +28,31 @@ fn formula_card(ctx: &mut Ctx, title: &str, lines: &[(&str, &str)]) {
 pub struct Geometry {
     mode: String,
     mode_t: f32,
-    pts: Vec<(f32, f32, f32)>,
+    pts: Vec<fx3d::Vec3>,
+    /// 3D 装饰网格（new() 预计算，draw() 只做旋转投影）
+    ico: fx3d::Mesh,
+    globe: fx3d::Mesh,
 }
 
 impl Geometry {
     pub fn new() -> Self {
         // 斐波那契球面点云
         let n = 420;
-        let mut pts = Vec::new();
         let ga = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
-        for i in 0..n {
-            let y = 1.0 - (i as f32 / (n - 1) as f32) * 2.0;
-            let r = (1.0 - y * y).max(0.0).sqrt();
-            let th = ga * i as f32;
-            pts.push((th.cos() * r, y, th.sin() * r));
-        }
+        let pts = (0..n)
+            .map(|i| {
+                let y = 1.0 - (i as f32 / (n - 1) as f32) * 2.0;
+                let r = (1.0 - y * y).max(0.0).sqrt();
+                let th = ga * i as f32;
+                fx3d::Vec3::new(th.cos() * r, y, th.sin() * r)
+            })
+            .collect();
         Geometry {
             mode: String::new(),
             mode_t: 0.0,
             pts,
+            ico: fx3d::icosa_mesh(),
+            globe: fx3d::latlong_mesh(12, 8, 1.0),
         }
     }
 }
@@ -111,74 +118,77 @@ impl Scene for Geometry {
 }
 
 impl Geometry {
+    /// 维度阶梯的主舞台：真透视 3D —— 斐波那契球点云（Z-Buffer 深度分层）
+    /// + 反向自旋的内核二十面体 + 逐级点亮坐标装饰（点 → 线 → 面 → 体）。
     fn draw_points(&mut self, ctx: &mut Ctx) {
-        let w = ctx.w() as f32;
-        let h = ctx.h() as f32;
-        let cx = w / 2.0;
-        let cy = h / 2.0 - 1.0;
-        let ry = (h as f32 * 0.30).min(w as f32 * 0.19);
-        let rx = ry * 1.9;
+        let w = ctx.w();
+        let h = ctx.h();
         let t = self.mode_t;
         let emerge = fx::ease_out((t / 1.1).clamp(0.0, 1.0));
-        let ang = t * 0.55;
-        let (sa, ca) = ang.sin_cos();
-        let mut zs: Vec<(i32, i32, f32)> = Vec::with_capacity(self.pts.len());
-        for (x, y, z) in &self.pts {
-            let xr = x * ca - z * sa;
-            let zr = x * sa + z * ca;
-            let px = cx + xr * rx * emerge;
-            let py = cy - y * ry * emerge;
-            zs.push((px.round() as i32, py.round() as i32, zr));
+        let dim = ((t / 0.85) as i32).clamp(0, 3);
+
+        let mut r3 = fx3d::R3::new(w, h);
+        r3.cam_z = 3.2;
+        r3.focal = h as f32 * 1.8;
+        r3.begin();
+        let span = 5.2;
+        let cy = h as f32 / 2.0 - 1.0;
+        let breathe = 1.12 * (1.0 + ctx.bass() * 0.05) * emerge;
+        let bass = ctx.bass();
+        {
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            // dim ≥ 1：内核正二十面体，反向自旋（先画，让球面点云压在它前面）
+            if dim >= 1 {
+                let ixf = fx3d::Xform::scaled(-t * 0.9, 0.6, t * 0.35, breathe * 0.52);
+                r3.wire(&mut tg, &self.ico, &ixf, theme::AMBER, theme::WHITE, span, 0.95 + bass * 0.3, 0.95);
+            }
+            // dim ≥ 3：经纬球壳（体 = 有界面的点集）
+            if dim >= 3 {
+                let gxf = fx3d::Xform::scaled(-t * 0.22, 0.35 * (t * 0.23).sin(), 0.0, breathe * 1.16);
+                r3.wire(&mut tg, &self.globe, &gxf, theme::CYAN, theme::WHITE, span, 1.15 + bass * 0.3, 0.9);
+            }
+            // 主点云最后画：点与点之间的缝隙里透出内核与球壳
+            let xf = fx3d::Xform::scaled(t * 0.55, 0.35 * (t * 0.23).sin(), 0.0, breathe);
+            r3.cloud(
+                &mut tg,
+                &self.pts,
+                &xf,
+                theme::CYAN.mix(theme::WHITE, bass * 0.25),
+                theme::BLUE_DIM,
+                fx3d::DEPTH_RAMP,
+                span,
+                0.80 + bass * 0.35,
+                0.95,
+            );
         }
-        zs.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
-        for (i, (px, py, z)) in zs.iter().enumerate() {
-            let depth = (z + 1.0) / 2.0;
-            let ch = if depth > 0.82 {
-                '@'
-            } else if depth > 0.55 {
-                '●'
-            } else if depth > 0.3 {
-                '·'
-            } else {
-                '.'
-            };
-            let col = theme::CYAN.mix(theme::BLUE_DIM, 1.0 - depth)
-                .mul(0.35 + depth * 0.85)
-                .mix(theme::MAGENTA, ctx.bass() * 0.25);
-            ctx.c.put(
-                ctx.r.x + px,
-                ctx.r.y + py,
-                ch,
-                col,
+
+        // 维度阶梯的 2D 示意层（图纸风格，压在 3D 上）
+        let cx = w as f32 / 2.0;
+        let rr = r3.focal * 0.5 * breathe / r3.cam_z; // 投影后的赤道半径（行）
+        if dim >= 1 {
+            ctx.c.hline(
+                ctx.r.x + (cx - rr * 2.4) as i32,
+                ctx.r.x + (cx + rr * 2.4) as i32,
+                ctx.r.y + cy as i32,
+                '─',
+                theme::TEXT_FAINT.mul(0.8),
                 theme::VOID,
             );
-            let _ = i;
-        }
-        // 维度阶梯
-        let steps = t / 0.85;
-        let dim = (steps as i32).clamp(0, 3);
-        let labels = ["dim = 0  ·  point", "dim = 1  ·  line", "dim = 2  ·  plane", "dim = 3  ·  me"];
-        ctx.textc_glow(2, labels[dim as usize], theme::WHITE, theme::CYAN);
-        if dim >= 1 {
-            for k in 0..14 {
-                let u = k as f32 / 13.0;
-                let y = cy + (u - 0.5) * ry * 1.5;
-                ctx.put((cx - rx * 0.62) as i32, y as i32, '│', theme::CYAN.mul(0.5));
-                ctx.put((cx + rx * 0.62) as i32, y as i32, '│', theme::CYAN.mul(0.5));
-            }
         }
         if dim >= 2 {
-            for k in -8..=8 {
-                let y = cy + k as f32 * (ry * 0.11);
-                ctx.hline(
-                    (cx - rx * 0.68) as i32,
-                    (cx + rx * 0.68) as i32,
-                    y as i32,
-                    '┈',
-                    theme::CYAN.mul(0.35),
-                );
-            }
+            ctx.c.ellipse(
+                ctx.r.x + cx as i32,
+                ctx.r.y + cy as i32,
+                rr * 2.05,
+                rr,
+                '┈',
+                theme::CYAN.mul(0.4),
+                theme::VOID,
+            );
         }
+        // 维度阶梯
+        let labels = ["dim = 0  ·  point", "dim = 1  ·  line", "dim = 2  ·  plane", "dim = 3  ·  me"];
+        ctx.textc_glow(2, labels[dim as usize], theme::WHITE, theme::CYAN);
         formula_card(
             ctx,
             "DIMENSION",
@@ -351,6 +361,8 @@ impl Geometry {
 pub struct Electric {
     bolts: Vec<Vec<(i32, i32)>>,
     bolt_t: f32,
+    /// 双球融合用的球面点云（new() 预计算）
+    sph: Vec<fx3d::Vec3>,
 }
 
 impl Electric {
@@ -358,6 +370,7 @@ impl Electric {
         Electric {
             bolts: Vec::new(),
             bolt_t: 0.0,
+            sph: fx3d::fib_sphere(300),
         }
     }
 }
@@ -387,37 +400,53 @@ impl Scene for Electric {
 }
 
 impl Electric {
+    /// 3D 示波器：俯视台面上躺着的交流波形，幅度塌陷成直流
     fn ac_dc(&mut self, ctx: &mut Ctx, t: f32) {
         let w = ctx.w();
         let h = ctx.h();
-        let cy = h / 2;
-        for x in (0..w).step_by(4) {
-            ctx.vline(x, 2, h - 3, '·', theme::BLUE_DIM.mul(0.4));
-        }
-        for y in (2..h - 2).step_by(2) {
-            ctx.hline(0, w - 1, y, '·', theme::BLUE_DIM.mul(0.4));
-        }
-        ctx.hline(0, w - 1, cy, '─', theme::TEXT_FAINT.mul(0.7));
+        let bass = ctx.bass();
+        let amp = ((1.0 - t / 2.0).max(0.0)) + 0.05;
 
-        // AC 幅度逐渐塌陷为 DC
-        let amp = ((1.0 - t / 2.0).max(0.0)) * (h as f32 * 0.20) + 0.6;
-        let mut prev: Option<(i32, i32)> = None;
-        for x in 0..w {
-            let ph = x as f32 / 12.0 + t * 9.0;
-            let y = cy as f32 - (ph.sin() * amp) - ctx.bass() * (if amp < 2.0 { 0.6 } else { 4.0 }) * (ph * 2.0).sin();
-            let p = (x, y.round() as i32);
-            let col = theme::heat((x as f32 / w as f32 * 0.6 + 0.2).min(1.0));
-            if let Some(pp) = prev {
-                if (p.1 - pp.1).abs() > 1 {
-                    ctx.c.put(ctx.r.x + p.0, ctx.r.y + p.1, '│', col, theme::VOID);
+        let mut r3 = fx3d::R3::new(w, h);
+        r3.cam_z = 3.0;
+        r3.focal = h as f32 * 2.0;
+        r3.begin();
+        let span = 6.5;
+        {
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            // 台面向镜头倾倒（绕 x 轴 ~58°）
+            let xf = fx3d::Xform::scaled(0.0, 1.02, 0.0, 1.25);
+            let floor = fx3d::floor_mesh(13, 0.0);
+            r3.wire(&mut tg, &floor, &xf, theme::BLUE_DIM, theme::CYAN_DIM, span, 0.6, 0.8);
+            // 波形躺在台面上：AC → DC 的塌陷一目了然
+            let n = 110;
+            for i in 0..=n {
+                let u = i as f32 / n as f32;
+                let x = (u - 0.5) * 2.0;
+                let ph = x * 9.0 + t * 9.0;
+                let mut y = ph.sin() * amp * 0.34;
+                if amp < 0.12 {
+                    // DC 残留纹波：随低频颤动
+                    y = (ph * 2.3).sin() * (0.015 + bass * 0.05);
                 }
+                let rp = xf.apply(fx3d::Vec3::new(x, y, 0.0));
+                let Some((sx, sy, d)) = r3.project(rp) else { continue };
+                let dep = r3.depth01(d, span);
+                let col = theme::heat((u * 0.7 + 0.2).min(1.0))
+                    .mul((1.2 - dep * 0.55) * (0.75 + bass * 0.5));
+                let ch = if amp < 0.12 {
+                    '='
+                } else if i % 4 == 0 {
+                    '●'
+                } else {
+                    '·'
+                };
+                r3.plot(&mut tg, sx, sy, d, ch, col, 1.0);
             }
-            ctx.put(p.0, p.1, if amp < 2.0 { '=' } else { '·' }, col);
-            prev = Some(p);
         }
-        // 闪电
+        // 台面上的闪电（2D 叠加，bloom 会把它点亮）
         self.bolt_t += ctx.dt;
-        if self.bolt_t > 0.09 && amp < h as f32 * 0.16 {
+        if self.bolt_t > 0.09 && t > 0.6 {
             self.bolt_t = 0.0;
             let mut b = Vec::new();
             let x0 = ctx.rng.irange(2, w - 2);
@@ -446,50 +475,59 @@ impl Electric {
             ctx,
             "CURRENT",
             &[
-                ("mode", if amp < 2.0 { "DC" } else { "AC" }),
+                ("mode", if amp < 0.12 { "DC" } else { "AC" }),
                 ("amp", &format!("{:.3}", amp)),
                 ("blind", "vision"),
             ],
         );
     }
 
+    /// 3D 涡旋隧道：碎片从深处被吸向镜头，越近旋转越快、越亮
     fn dizzy(&mut self, ctx: &mut Ctx, t: f32) {
         let w = ctx.w();
         let h = ctx.h();
-        let cx = w / 2;
-        let cy = h / 2;
-        // 螺旋
-        let n = 900;
+        let cx = w as f32 / 2.0;
+        let cy = h as f32 / 2.0;
+        let focal = h as f32 * 2.0;
+        let bass = ctx.bass();
+        let n = 560;
         for i in 0..n {
-            let u = i as f32 / n as f32;
-            let th = u * 26.0 - t * 3.2;
-            let r = u * (h as f32 * 0.46);
-            let x = cx as f32 + th.cos() * r * 2.1;
-            let y = cy as f32 + th.sin() * r;
-            let a = 1.0 - u;
-            let col = theme::heat(u).mul(a * (0.5 + ctx.bass() * 0.9));
-            ctx.c.put(ctx.r.x + x as i32, ctx.r.y + y as i32, '·', col, theme::VOID);
+            let r0 = 0.25 + fx::hash2(i, 1, 77) * 0.85;
+            let phi0 = fx::hash2(i, 2, 77) * fx3d::TAU;
+            let speed = 0.22 + fx::hash2(i, 3, 77) * 0.22;
+            let q = (t * speed + fx::hash2(i, 4, 77) * 2.0) % 1.0; // 0 深 → 1 近
+            let d = 1.9 * (1.0 - q) + 0.10;
+            let swirl = phi0 + t * 1.3 + q * (3.0 + r0 * 5.0);
+            let sx = cx + focal * 0.34 * r0 * swirl.cos() / d;
+            let sy = cy - focal * 0.17 * r0 * swirl.sin() / d;
+            if sx < -4.0 || sy < -4.0 || sx > w as f32 + 4.0 || sy > h as f32 + 4.0 {
+                continue;
+            }
+            let heat = (phi0 / fx3d::TAU + swirl * 0.1).fract();
+            let col = theme::heat(heat).mul((0.38 + q * q * 1.25) * (0.75 + bass * 0.8));
+            let ch = if q > 0.86 {
+                '●'
+            } else if q > 0.5 {
+                '·'
+            } else {
+                ':'
+            };
+            ctx.put(sx as i32, sy as i32, ch, col);
         }
         // 同心环
-        fx::rings(ctx.c, ctx.r.x + cx, ctx.r.y + cy, t * 1.4, h as f32 * 0.5, 7, theme::MAGENTA, false);
-        for k in 0..5 {
-            let rr = (k as f32 + 1.0) / 5.0;
-            let col = theme::MAGENTA.mul(0.25 + 0.5 * ((t * 2.0 + rr * 6.0).sin() * 0.5 + 0.5));
-            ctx.c
-                .ellipse(cx, cy, h as f32 * 0.46 * rr * 2.1, h as f32 * 0.46 * rr, '○', col, theme::VOID);
-        }
+        fx::rings(ctx.c, ctx.r.x + w / 2, ctx.r.y + h / 2, t * 1.4, h as f32 * 0.5, 6, theme::MAGENTA, false);
         // 眩晕文字环绕
         for k in 0..6 {
             let th = t * 1.6 + k as f32 / 6.0 * std::f32::consts::TAU;
             let r = h as f32 * 0.40;
-            let x = cx as f32 + th.cos() * r * 2.0;
-            let y = cy as f32 + th.sin() * r * 0.62;
+            let x = cx + th.cos() * r * 2.0;
+            let y = cy + th.sin() * r * 0.62;
             let a = 0.35 + 0.65 * ((th * 0.5).sin() * 0.5 + 0.5);
             ctx.textb(x as i32 - 4, y as i32, "so dizzy", theme::CYAN.mul(a), theme::VOID);
         }
         ctx.textc_glow(1, "and then blind my vision", theme::WHITE, theme::MAGENTA);
         // 视觉抖动：整屏行偏移
-        let shake = (t * 22.0).sin() * (1.0 + ctx.bass() * 3.0);
+        let shake = (t * 22.0).sin() * (1.0 + bass * 3.0);
         let full = ctx.r;
         for y in full.y..=full.bottom() {
             let d = (shake * ((y as f32 * 0.4).sin())) as i32;
@@ -499,68 +537,83 @@ impl Electric {
         }
     }
 
+    /// 年份超时空：公元 2026 一路倒退进公元前，标签从深处扑向镜头
     fn time_travel(&mut self, ctx: &mut Ctx, t: f32) {
         let w = ctx.w();
         let h = ctx.h();
-        let cy = h / 2;
-        // 年份反向流逝
-        let speed = 420.0 + t * 260.0;
-        let base = -(t * speed);
-        for row in 0..3 {
-            let col = theme::CYAN.mul(0.9 - row as f32 * 0.25);
-            let y = cy - 4 + row as i32 * 3;
-            ctx.hline(0, w - 1, y, '━', theme::BLUE_DIM.mul(0.5));
-            for k in 0..(w / 10 + 2) {
-                let yr = base + (k as f32 * 10.0 * (row as f32 + 1.0) * 12.0);
-                let x = ((k as f32 * 10.0 - base * 0.02) % (w as f32)).rem_euclid(w as f32);
-                if x < 0.0 || x > (w - 8) as f32 {
-                    continue;
-                }
-                let val = if yr >= 0.0 {
-                    format!("{:>5.0} AD", yr.min(99999.0))
-                } else {
-                    format!("{:>5.0} BC", -yr)
-                };
-                ctx.text(x as i32, y - 1, &val, col.mul(0.4 + 0.6 * (1.0 - x / w as f32)));
+        let cx = w as f32 / 2.0;
+        let cy = h as f32 / 2.0;
+        let base = 2026.0f32 - t * 320.0;
+        let slots = 18;
+        for i in 0..slots {
+            let h1 = fx::hash2(i, 3, 913);
+            let h2 = fx::hash2(i, 7, 913);
+            let q = (t * 0.5 + h1 * 3.0) % 1.0; // 0 远 → 1 近
+            let year = (base - q * 130.0 - h2 * 110.0) as i32;
+            let label = if year > 0 {
+                format!("{year:>4} AD")
+            } else {
+                format!("{:>4} BC", -year)
+            };
+            let ux = (h1 - 0.5) * 2.6;
+            let uy = (h2 - 0.5) * 1.5;
+            let spread = 0.22 + q * q * 2.8;
+            let sx = (cx + ux * spread * 30.0) as i32;
+            let sy = (cy - uy * spread * 22.0) as i32;
+            if sx < 0 || sy < 1 || sx > w - 9 || sy > h - 2 {
+                continue;
             }
+            let a = 0.20 + q * q * 1.0;
+            let col = if year > 0 {
+                theme::CYAN.mix(theme::AMBER, q * 0.6)
+            } else {
+                theme::AMBER
+            };
+            ctx.text(sx, sy, &label, col.mul(a.min(1.0)));
         }
-        // 中央：旋转时钟
-        let cx = w / 2;
+        // 中央：旋转时钟（时间锚点）
+        let cy2 = h / 2;
         let r = (h as f32 * 0.20).min(11.0);
         ctx.c
-            .ellipse(cx, cy + 3, r * 2.0, r, '○', theme::AMBER.mul(0.8), theme::VOID);
+            .ellipse(w / 2, cy2 + 3, r * 2.0, r, '○', theme::AMBER.mul(0.85), theme::VOID);
         for k in 0..12 {
             let a = k as f32 / 12.0 * std::f32::consts::TAU;
             ctx.put(
-                cx + (a.cos() * r * 1.85) as i32,
-                cy + 3 + (a.sin() * r * 0.92) as i32,
+                w / 2 + (a.cos() * r * 1.85) as i32,
+                cy2 + 3 + (a.sin() * r * 0.92) as i32,
                 '·',
                 theme::AMBER.mul(0.5),
             );
         }
         let ha = -t * 12.0;
         ctx.c.line(
-            cx,
-            cy + 3,
-            cx + (ha.cos() * r * 1.6) as i32,
-            cy + 3 + (ha.sin() * r * 0.8) as i32,
+            w / 2,
+            cy2 + 3,
+            w / 2 + (ha.cos() * r * 1.6) as i32,
+            cy2 + 3 + (ha.sin() * r * 0.8) as i32,
             '─',
             theme::AMBER,
             theme::VOID,
         );
         let ma = -t * 26.0;
         ctx.c.line(
-            cx,
-            cy + 3,
-            cx + (ma.cos() * r * 1.2) as i32,
-            cy + 3 + (ma.sin() * r * 0.6) as i32,
+            w / 2,
+            cy2 + 3,
+            w / 2 + (ma.cos() * r * 1.2) as i32,
+            cy2 + 3 + (ma.sin() * r * 0.6) as i32,
             '─',
             theme::CYAN,
             theme::VOID,
         );
-        ctx.c
-            .line(cx - 20, cy + 3, cx + 20, cy + 3, '─', theme::TEXT_FAINT.mul(0.6), theme::VOID);
-
+        ctx.c.line(
+            w / 2 - 20,
+            cy2 + 3,
+            w / 2 + 20,
+            cy2 + 3,
+            '─',
+            theme::TEXT_FAINT.mul(0.6),
+            theme::VOID,
+        );
         // 速度线
         for k in 0..26 {
             let y = (k * 7 + (t * 90.0) as i32) % h;
@@ -570,46 +623,56 @@ impl Electric {
         ctx.textc_glow(1, "we can travel  ·  A.D → B.C", theme::WHITE, theme::PURPLE);
     }
 
+    /// 双球融合：青/品红两团点云从两侧飞向彼此，合一的瞬间白热爆发
     fn unite(&mut self, ctx: &mut Ctx, t: f32) {
         let w = ctx.w();
         let h = ctx.h();
-        let cx = w / 2;
-        let cy = h / 2;
+        let bass = ctx.bass();
         let u = fx::smooth((t / 2.4).clamp(0.0, 1.0));
-        let dx = (1.0 - u) * (h as f32 * 0.30);
-        let rr = (h as f32 * 0.16).min(16.0);
-        for (sgn, col) in [(-1.0f32, theme::CYAN), (1.0, theme::MAGENTA)] {
-            let ex = cx as f32 + sgn * dx * 2.1;
-            for i in 0..300 {
-                let a = i as f32 / 300.0 * std::f32::consts::TAU;
-                let wob = 1.0 + 0.06 * (a * 7.0 + t * 4.0).sin();
-                let px = ex + a.cos() * rr * 2.0 * wob;
-                let py = cy as f32 + a.sin() * rr * wob;
-                ctx.c
-                    .put(ctx.r.x + px as i32, ctx.r.y + py as i32, '○', col.mul(0.35 + u * 0.6), theme::VOID);
-            }
+        let off = (1.0 - u) * 1.45;
+        let merged = u >= 0.999;
+
+        let mut r3 = fx3d::R3::new(w, h);
+        r3.cam_z = 3.4;
+        r3.focal = h as f32 * 2.0;
+        r3.begin();
+        let span = 5.6;
+        {
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            let xf = fx3d::Xform::scaled(t * 0.5, 0.3, 0.0, 0.62 + u * 0.16 + bass * 0.03);
+            let hi = if merged {
+                theme::WHITE
+            } else {
+                theme::CYAN
+            };
+            let hi2 = if merged { theme::WHITE } else { theme::MAGENTA };
+            // 左球（青）
+            let a: Vec<fx3d::Vec3> = self.sph.iter().map(|p| fx3d::Vec3::new(p.x - off, p.y, p.z)).collect();
+            r3.cloud(&mut tg, &a, &xf, hi, theme::BLUE_DIM, fx3d::DEPTH_RAMP, span, 0.95, 0.95);
+            // 右球（品红）
+            let b: Vec<fx3d::Vec3> = self.sph.iter().map(|p| fx3d::Vec3::new(p.x + off, p.y, p.z)).collect();
+            r3.cloud(&mut tg, &b, &xf, hi2, theme::MAGENTA_DIM, fx3d::DEPTH_RAMP, span, 0.95, 0.95);
         }
-        // 交叠区
-        if u > 0.05 {
-            for y in -((rr as i32) * 2)..=((rr as i32) * 2) {
-                for x in -((rr as i32) * 3)..=((rr as i32) * 3) {
-                    let px = cx + x;
-                    let py = cy + y;
-                    let d1 = (((x as f32) / 2.1 + dx).powi(2) + (y as f32).powi(2)).sqrt();
-                    let d2 = (((x as f32) / 2.1 - dx).powi(2) + (y as f32).powi(2)).sqrt();
-                    if d1 < rr && d2 < rr {
-                        let a = u * (0.5 + 0.5 * (t * 5.0 + x as f32 * 0.3).sin());
-                        ctx.put(px, py, '▒', theme::WHITE.mul(a * 0.75));
-                    }
-                }
-            }
+        // 合一冲击环
+        if t > 2.4 && t < 3.4 {
+            let q = (t - 2.4) / 1.0;
+            let rr = q * h as f32 * 0.75;
+            let a = (1.0 - q) * 0.9;
+            ctx.c.ellipse(w / 2, h / 2, rr * 2.1, rr, '●', theme::WHITE.mul(a), theme::VOID);
+            ctx.c.ellipse(w / 2, h / 2, rr * 1.6, rr * 0.76, '○', theme::MAGENTA.mul(a * 0.7), theme::VOID);
+        }
+        // 融合后的白热核心
+        if merged {
+            let pulse = 0.7 + bass * 0.5;
+            let rr = 2.0 + bass * 3.0;
+            ctx.c.ellipse(w / 2, h / 2, rr * 2.0, rr, '░', theme::WHITE.mul(pulse * 0.5), theme::VOID);
         }
         ctx.textc_glow(1, "and we can unite  ·  so deeply", theme::WHITE, theme::MAGENTA);
         if u >= 0.999 {
             let txt = "one";
             bigfont::center_glow(
                 ctx.c,
-                ctx.r.x + cx,
+                ctx.r.x + w / 2,
                 ctx.r.y + h - 9,
                 txt,
                 theme::WHITE,
@@ -628,6 +691,9 @@ impl Electric {
 pub struct Stimulus {
     parts: Particles,
     last_hit: f32,
+    /// 3D 反应堆：内核二十面体 + 表面点云
+    ico: fx3d::Mesh,
+    sph: Vec<fx3d::Vec3>,
 }
 
 impl Stimulus {
@@ -635,6 +701,8 @@ impl Stimulus {
         Stimulus {
             parts: Particles::new(),
             last_hit: -1.0,
+            ico: fx3d::icosa_mesh(),
+            sph: fx3d::fib_sphere(220),
         }
     }
 }
@@ -656,7 +724,7 @@ impl Scene for Stimulus {
                 ctx.put(x, y, '·', theme::BLUE_DIM.mul(0.35));
             }
         }
-        // 每次重音爆发
+        // 每次重音爆发 + 冲击环
         if t - self.last_hit > 0.32 && ctx.hit() > 0.25 {
             self.last_hit = t;
             self.parts.burst(
@@ -670,26 +738,44 @@ impl Scene for Stimulus {
                 &mut ctx.rng,
             );
         }
+        let age = t - self.last_hit;
+        if age < 0.55 {
+            let q = age / 0.55;
+            let rr = q * h as f32 * 0.42;
+            let a = (1.0 - q) * 0.7;
+            ctx.c.ellipse(cx, cy, rr * 2.1, rr, '●', theme::CYAN.mul(a), theme::VOID);
+        }
         self.parts.update(ctx.dt, 4.0, 0.5);
         self.parts.draw(ctx.c);
 
-        // 满足度仪表
+        // 满足度 = 反应堆转速；3D 内核随进度与低频脉动
         let prog = fx::smooth((t / 2.6).clamp(0.0, 1.0));
-        let rr = (h as f32 * 0.26).min(13.0);
-        ctx.c
-            .ellipse(cx, cy, rr * 2.1, rr, '○', theme::CYAN_DIM.mul(0.8), theme::VOID);
-        let n = (prog * 120.0) as i32;
-        for i in 0..n {
-            let a = -std::f32::consts::FRAC_PI_2 + i as f32 / 120.0 * std::f32::consts::TAU;
-            let px = cx as f32 + a.cos() * rr * 2.1;
-            let py = cy as f32 + a.sin() * rr;
-            ctx.c.put(
-                ctx.r.x + px as i32,
-                ctx.r.y + py as i32,
-                '●',
-                theme::heat(prog).mul(0.9),
-                theme::VOID,
+        let mut r3 = fx3d::R3::new(w, h);
+        r3.cam_z = 3.3;
+        r3.focal = h as f32 * 2.0;
+        r3.begin();
+        let span = 5.4;
+        let bass = ctx.bass();
+        {
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            let spin = t * (0.5 + prog * 1.6);
+            let breathe = 0.92 + bass * 0.10 + prog * 0.14;
+            let xf = fx3d::Xform::scaled(spin, 0.42 * (t * 0.4).sin(), spin * 0.6, breathe);
+            // 表面点云（发热的反应堆芯）
+            r3.cloud(
+                &mut tg,
+                &self.sph,
+                &xf,
+                theme::heat((0.3 + prog * 0.6).min(1.0)).mix(theme::WHITE, bass * 0.3),
+                theme::BLUE_DIM,
+                fx3d::DEPTH_RAMP,
+                span,
+                0.9,
+                0.9,
             );
+            // 外壳线框
+            let ixf = fx3d::Xform::scaled(-spin * 0.7, 0.3, -spin * 0.4, breathe * 1.22);
+            r3.wire(&mut tg, &self.ico, &ixf, theme::CYAN, theme::WHITE, span, 1.0, 0.9);
         }
         let pct = (prog * 100.0) as i32;
         let s = format!("{pct}%");
@@ -732,11 +818,34 @@ impl Scene for Stimulus {
 // ════════════════════════════════════════════════════════════
 // 6. Trapped —— 64.045 → 74.045
 // ════════════════════════════════════════════════════════════
-pub struct Trapped;
+/// 真 3D 牢笼：相机在笼外迎面推进，铁笼缓缓合拢——
+/// 笼壁铁栏、地板 / 天花板网格、漂浮数据尘全部由 fx3d 透视渲染，
+/// "walls closing" 不再是一块 2D 边框，而是一只逼近的立体囚笼。
+pub struct Trapped {
+    cage: fx3d::Mesh,
+    floor: fx3d::Mesh,
+    ceil: fx3d::Mesh,
+    motes: Vec<fx3d::Vec3>,
+}
 
 impl Trapped {
     pub fn new() -> Self {
-        Trapped
+        let mut rng = fx::Rng::new(0x7A1E);
+        let motes = (0..130)
+            .map(|_| {
+                fx3d::Vec3::new(
+                    rng.range(-1.3, 1.3),
+                    rng.range(-1.3, 1.3),
+                    rng.range(-1.3, 1.3),
+                )
+            })
+            .collect();
+        Trapped {
+            cage: fx3d::box_mesh(6),
+            floor: fx3d::floor_mesh(9, -1.0),
+            ceil: fx3d::floor_mesh(7, 1.0),
+            motes,
+        }
     }
 }
 
@@ -750,30 +859,40 @@ impl Scene for Trapped {
         let w = ctx.w();
         let h = ctx.h();
         ctx.clear(theme::VOID);
-        // 先铺透视网格，再把大字压在上面
-        for k in 1..16 {
-            let u = k as f32 / 16.0;
-            let y = (h as f32 / 2.0) + (u * u) * (h as f32 / 2.0);
-            if y >= h as f32 {
-                break;
-            }
-            ctx.hline(0, w - 1, y as i32, '─', theme::CYAN_DIM.mul(0.45 + u * 0.5));
+
+        let shrink = fx::smooth((t / 3.4).clamp(0.0, 1.0));
+        let s = 1.0 - shrink * 0.45; // 笼壁：1.0 → 0.55，同时镜头推进，双重压迫
+        let span = 6.0;
+
+        // 相机在笼外正前方缓慢推进（2.55 → 2.0）：看着牢笼迎面合拢
+        let mut r3 = fx3d::R3::new(w, h);
+        r3.cam_z = 2.55 - shrink * 0.55;
+        r3.near = 0.10;
+        r3.focal = h as f32 * 1.75;
+        r3.begin();
+
+        // 低频 + 收缩压力驱动的镜头抖动（绝对时间的确定性函数）
+        let tremble = 0.006 + shrink * 0.012 + ctx.bass() * 0.010;
+        let jx = ((t * 13.7).sin() + (t * 29.3).sin() * 0.6) * tremble;
+        let xf = fx3d::Xform::scaled(t * 0.14, 0.15 * (t * 0.21).sin() + jx, jx * 0.7, s);
+        let bass = ctx.bass();
+        let cage_col = theme::CYAN.mix(theme::BLUE, 0.3);
+
+        {
+            let mut tg = fx3d::Target::new(ctx.c, ctx.r.x, ctx.r.y, w, h);
+            // 环绕的数据尘（独立慢速旋转 → 视差层深）
+            let mxf = fx3d::Xform::scaled(-t * 0.06, 0.10 * (t * 0.17).sin(), 0.0, 1.55);
+            r3.cloud(&mut tg, &self.motes, &mxf, theme::CYAN_DIM, theme::BLUE_DIM, fx3d::DEPTH_RAMP, span, 0.7, 0.8);
+            // 地板 + 天花板网格（烘在笼体坐标系里，随笼一起收缩）
+            r3.wire(&mut tg, &self.floor, &xf, theme::CYAN_DIM, theme::CYAN, span, 0.75 + bass * 0.35, 0.9);
+            r3.wire(&mut tg, &self.ceil, &xf, theme::BLUE_DIM, theme::CYAN_DIM, span, 0.6, 0.8);
+            // 铁笼本体：棱上的"栏杆"随收缩向镜头逼近
+            r3.wire(&mut tg, &self.cage, &xf, cage_col, theme::WHITE, span, 1.0 + bass * 0.3, 1.0);
         }
-        for k in -14..=14 {
-            let x = w / 2 + k * 6;
-            ctx.c.line(
-                ctx.r.x + w / 2,
-                ctx.r.y + h / 2,
-                ctx.r.x + x,
-                ctx.r.y + h - 1,
-                '·',
-                theme::CYAN_DIM.mul(0.5),
-                theme::VOID,
-            );
-        }
+
         // 背景大字（随低频呼吸）
         let bw = bigfont::width("SIMULATION", 1);
-        let breathe = 0.45 + 0.35 * ctx.bass();
+        let breathe = 0.45 + 0.35 * bass;
         bigfont::draw(
             ctx.c,
             ctx.r.x + (w - bw) / 2,
@@ -783,39 +902,16 @@ impl Scene for Trapped {
             theme::VOID,
             1,
         );
-        // 收缩的牢笼
-        let shrink = fx::smooth((t / 3.4).clamp(0.0, 1.0));
-        let inset = (shrink * (h as f32 * 0.62)) as i32;
-        let cw = (w - inset * 2).max(20);
-        let chh = (h - inset).max(6);
-        let cell = Rect::new((w - cw) / 2, (h - chh) / 2, cw, chh);
-        for yy in cell.y..=cell.bottom() {
-            for xx in cell.x..=cell.right() {
-                let bar = ((xx + (t * 3.0) as i32) % 7) == 0;
-                if bar {
-                    ctx.put(xx, yy, '│', theme::CYAN.mul(0.10 + ctx.bass() * 0.12));
-                }
-            }
-        }
-        ctx.frame(cell, Frame::Heavy, theme::CYAN.mul(0.55 + ctx.bass() * 0.45));
-        // 四角螺栓
-        for (x, y) in [
-            (cell.x, cell.y),
-            (cell.right(), cell.y),
-            (cell.x, cell.bottom()),
-            (cell.right(), cell.bottom()),
-        ] {
-            ctx.put(x, y, '◤', theme::WHITE.mul(0.7));
-        }
         ctx.textc_glow(1, "though we are trapped  ·  in this strange simulation", theme::WHITE, theme::CYAN);
-        // 边界告警
+        // 边界告警：脉冲式红闪，不做常驻红洗
         if shrink > 0.75 {
             let bl = ((t * 5.0) as i32) % 2 == 0;
             if bl {
-                ctx.textb(cell.x + 2, cell.y + 1, " WALLS CLOSING ", theme::VOID, theme::RED.mul(0.8));
+                ctx.textb(3, 3, " WALLS CLOSING ", theme::VOID, theme::RED.mul(0.8));
+                ctx.flash(0.10 + 0.06 * bass, theme::RED);
+            } else {
+                ctx.flash(0.02, theme::RED);
             }
-            let a = 0.05 + 0.10 * ctx.bass();
-            ctx.flash(a, theme::RED);
         }
         // 抖动
         let sh = (t * 14.0).sin() * (shrink * 2.0 + ctx.bass() * 1.5);
